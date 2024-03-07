@@ -31,6 +31,8 @@ We won't support any concept of transactions.
 
 - We create a hint file when closing one of the active data files.
 
+- API accepts Vector<u8> instead of references followed by cloning. Up to caller to decide to create memory clone if need be.
+
 ### Merging
 When merge happens, just read over all files and create a new data file + hint file.
 
@@ -103,3 +105,6 @@ Cons:
     Slower Compaction: Compaction processes, which merge and rewrite data files to reclaim disk space, can be slower for larger files. Compacting large files involves copying and rewriting larger amounts of data, which can increase the duration of compaction operations and potentially impact system responsiveness.
 
     Longer Recovery Times: In the event of a system failure or crash, recovering data from larger files may take longer compared to smaller files. Recovery processes may need to scan and process larger volumes of data, leading to increased downtime and slower system recovery.
+
+### Post implementation todos
+- Clean up error handling

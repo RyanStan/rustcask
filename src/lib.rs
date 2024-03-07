@@ -1,13 +1,20 @@
-use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter}, path::{Path, PathBuf}};
+use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter, Write}, path::{Path, PathBuf}};
 use crate::error::RustcaskError;
 use std::fs::OpenOptions;
 mod error;
 use regex::Regex;
+use serde::{Serialize, Deserialize};
 
 type GenerationNumber = u64;
 
-pub struct RustCask<K, V> {
-    map: HashMap<K, V>,
+#[derive(Serialize, Deserialize, Debug)]
+struct DataFileEntry {
+    //TODO [RyanStan 03/05/24] Add CRC and timestamp
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
+pub struct RustCask {
     active_generation: GenerationNumber,
     active_data_file: BufWriter<File>,
 
@@ -25,9 +32,20 @@ where
 {
 
     /// Inserts a key-value pair into the map.
-    pub fn set(&mut self, key: K, value: V) -> Result<Option<V>, RustcaskError> {
+    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<Option<V>, RustcaskError> {
         Ok(self.map.insert(key, value))
-    }
+        /*
+         * This is the next piece to implement. Let's work on serialization and deserialization of values into the file.
+         * And then add the simultaneous keydir.
+         * How do I push key and value into a stream of bytes to shove into dir entry?
+         */
+        let data_file_entry = DataFileEntry { key, value };
+        // TODO [RyanStan 3/6/23] Instead of panicking with except, we should bubble errors up to the caller.
+        let encoded = bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
+        self.active_data_file.write_all(&encoded).expect("Failed to write data file entry to stream");
+
+        // Need to know now keydir with file gen number + offset of write that we just did.
+    }   
 
     /// Returns a reference to the value corresponding to the key.
     pub fn get(&self, key: &K) -> Option<&V> {
