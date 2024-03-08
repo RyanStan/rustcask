@@ -108,3 +108,6 @@ Cons:
 
 ### Post implementation todos
 - Clean up error handling
+- Implement logging with tracing crate
+- Clean up code to use more abstractions. I can use this implementation as a reference: https://github.com/ltungv/bitcask/blob/master/src/storage/bitcask/log.rs#L19.
+    E.g. I like how we built his own type that implements writer, which does extra things. 

@@ -1,11 +1,15 @@
-use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter, Write}, path::{Path, PathBuf}};
+use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter, Seek, Write}, path::{Path, PathBuf}};
 use crate::error::RustcaskError;
 use std::fs::OpenOptions;
-mod error;
+use keydir::KeyDir;
 use regex::Regex;
 use serde::{Serialize, Deserialize};
 
+mod error;
+mod keydir;
+
 type GenerationNumber = u64;
+
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataFileEntry {
@@ -22,43 +26,43 @@ pub struct RustCask {
     // system open file handle limits. We should use a LRU cache instead.
     non_active_data_files: HashMap<GenerationNumber, BufReader<File>>,
 
-    directory: PathBuf
+    directory: PathBuf,
+
+    keydir: KeyDir,
 }
 
-impl<K, V> RustCask<K, V>
-where
-    K: Eq + PartialEq,
-    K: Hash,
-{
+impl RustCask {
 
     /// Inserts a key-value pair into the map.
-    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<Option<V>, RustcaskError> {
-        Ok(self.map.insert(key, value))
-        /*
-         * This is the next piece to implement. Let's work on serialization and deserialization of values into the file.
-         * And then add the simultaneous keydir.
-         * How do I push key and value into a stream of bytes to shove into dir entry?
-         */
+    /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
+    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
         let data_file_entry = DataFileEntry { key, value };
-        // TODO [RyanStan 3/6/23] Instead of panicking with except, we should bubble errors up to the caller.
-        let encoded = bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
-        self.active_data_file.write_all(&encoded).expect("Failed to write data file entry to stream");
 
-        // Need to know now keydir with file gen number + offset of write that we just did.
+        let encoded = bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
+        
+        let file_offset = self.active_data_file.stream_position().unwrap();
+        self.active_data_file.write_all(&encoded).expect("Failed to write data file entry to stream");
+        self.active_data_file.flush().unwrap();
+
+        self.keydir.set(key, self.active_generation, file_offset, encoded.len().try_into().unwrap());
+
+        Ok(())
     }   
 
     /// Returns a reference to the value corresponding to the key.
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.map.get(key)
+    pub fn get(&self, key: Vec<u8>) -> Option<&Vec<u8>> {
+        // TODO: I should implement this next. It will help validate that set is working.
+        //Some(Vec::new())
     }
 
     /// Removes a key from the store, returning the value at the key
     /// if the key was previously in the map.
-    pub fn remove(&mut self, key: &K) -> Result<Option<V>, RustcaskError> {
-        Ok(self.map.remove(key))
+    pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RustcaskError> {
+        // TODO: implement
+        Ok(None)
     }
 
-    pub fn open(rustcask_dir: &Path) -> Result<RustCask<K, V>, RustcaskError> {
+    pub fn open(rustcask_dir: &Path) -> Result<RustCask, RustcaskError> {
         
         let rustcask_dir = PathBuf::from(&rustcask_dir);
 
@@ -78,13 +82,12 @@ where
 
         let non_active_data_files = create_non_active_data_file_readers(&rustcask_dir, generations);
 
-
         Ok(RustCask {
-            map: HashMap::new(),
             active_generation,
             active_data_file,
             non_active_data_files,
             directory: rustcask_dir,
+            keydir: KeyDir::new(),
         })
 
     }
