@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter, Seek, Write}, path::{Path, PathBuf}};
+use std::{collections::HashMap, fs::{self, File}, hash::Hash, io::{BufReader, BufWriter, Seek, SeekFrom, Write}, path::{Path, PathBuf}};
 use crate::error::RustcaskError;
 use std::fs::OpenOptions;
 use keydir::KeyDir;
@@ -12,19 +12,28 @@ type GenerationNumber = u64;
 
 
 #[derive(Serialize, Deserialize, Debug)]
-struct DataFileEntry {
+pub struct DataFileEntry {
     //TODO [RyanStan 03/05/24] Add CRC and timestamp
-    key: Vec<u8>,
-    value: Vec<u8>,
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 pub struct RustCask {
     active_generation: GenerationNumber,
-    active_data_file: BufWriter<File>,
+    active_data_file_writer: BufWriter<File>,
 
     // TODO [RyanStan 2-28-24] Keeping a file handle for every open file may cause us to hit
     // system open file handle limits. We should use a LRU cache instead.
-    non_active_data_files: HashMap<GenerationNumber, BufReader<File>>,
+    //
+    // TODO [RyanStan 3-18-24] Threads are expected to share a RustCask instance. Therefore, 
+    // they must share this set of BufReaders. This limits parallelism because a read on a data file
+    // can only be performed by one thread at a time. We should instead allow each user thread 
+    // to have its own set of open file handles to the data and hint files. This way we can have multiple concurrent
+    // reads on the same file at once.
+    //
+    // A buffered reader provides benefits when performing sequential reads of the
+    // data and hint files during startup
+    data_file_readers: HashMap<GenerationNumber, BufReader<File>>,
 
     directory: PathBuf,
 
@@ -36,23 +45,32 @@ impl RustCask {
     /// Inserts a key-value pair into the map.
     /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
-        let data_file_entry = DataFileEntry { key, value };
+        // TODO: is this key clone ok?
+        let data_file_entry = DataFileEntry { key: key.clone(), value };
 
         let encoded = bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
         
-        let file_offset = self.active_data_file.stream_position().unwrap();
-        self.active_data_file.write_all(&encoded).expect("Failed to write data file entry to stream");
-        self.active_data_file.flush().unwrap();
+        let file_offset = self.active_data_file_writer.stream_position().unwrap();
+        self.active_data_file_writer.write_all(&encoded).expect("Failed to write data file entry to stream");
+        self.active_data_file_writer.flush().unwrap();
 
         self.keydir.set(key, self.active_generation, file_offset, encoded.len().try_into().unwrap());
 
         Ok(())
     }   
 
-    /// Returns a reference to the value corresponding to the key.
-    pub fn get(&self, key: Vec<u8>) -> Option<&Vec<u8>> {
-        // TODO: I should implement this next. It will help validate that set is working.
-        //Some(Vec::new())
+    pub fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
+        let keydir_entry = self.keydir.get(key)?;
+
+        let reader = self.data_file_readers.get_mut(&keydir_entry.data_file_gen)
+            .expect(&format!("Could not find reader for generation {}", &keydir_entry.data_file_gen));
+
+        reader.seek(SeekFrom::Start(keydir_entry.pos));
+        let data_file_entry: DataFileEntry = bincode::deserialize_from(reader).expect("Error deserializing data");
+
+        assert_eq!(&data_file_entry.key, key, "The deserialized entries key does not match the key passed to get");
+
+        Some(data_file_entry.value)
     }
 
     /// Removes a key from the store, returning the value at the key
@@ -78,14 +96,14 @@ impl RustCask {
                                                 .open(data_file_path(&rustcask_dir, active_generation))
                                                 .expect("Error opening active data file");
 
-        let active_data_file = BufWriter::new(active_data_file);
+        let active_data_file_writer = BufWriter::new(active_data_file);
 
-        let non_active_data_files = create_non_active_data_file_readers(&rustcask_dir, generations);
+        let data_file_readers = create_data_file_readers(&rustcask_dir, generations);
 
         Ok(RustCask {
             active_generation,
-            active_data_file,
-            non_active_data_files,
+            active_data_file_writer,
+            data_file_readers,
             directory: rustcask_dir,
             keydir: KeyDir::new(),
         })
@@ -120,7 +138,7 @@ fn parse_generation_number(path: PathBuf) -> GenerationNumber {
     generation
 }
 
-fn create_non_active_data_file_readers(rustcask_dir: &Path, generations: Vec<GenerationNumber>) -> HashMap<GenerationNumber, BufReader<File>> {
+fn create_data_file_readers(rustcask_dir: &Path, generations: Vec<GenerationNumber>) -> HashMap<GenerationNumber, BufReader<File>> {
     let mut map = HashMap::new();
     for generation in generations {
         let reader = BufReader::new(File::open(data_file_path(rustcask_dir, generation))
@@ -192,9 +210,9 @@ mod tests {
             File::create(dir.path().join(format!("{}.rustcask.hint", number))).unwrap();
         }
 
-        let rustcask = RustCask::<String, String>::open(dir.path()).unwrap();
+        let rustcask = RustCask::open(dir.path()).unwrap();
 
         assert_eq!(rustcask.active_generation, 5);
-        assert_eq!(rustcask.non_active_data_files.len(), 5);
+        assert_eq!(rustcask.data_file_readers.len(), 5);
     }
 }

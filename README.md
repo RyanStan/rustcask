@@ -20,6 +20,26 @@ Concurrent reads and writes --> the reads might not pick up the writes.
 
 We won't support any concept of transactions.
 
+** I should call this out in my implementation, and mention this other "blazingly fast key store":**
+The current concurrency model is that each open creates a Bitcask handle with a set of readers and a writer.
+The user of the library is responsible for spawning threads to execute reads and writes. However, the library is limited in that 
+we share a set of BufReader<File> instances for a given rustcask instance. Therefore, reads on the same data file will be serialized because the
+"deserialize_from' function requires a mutable reference to the reader. To fix this, we could make sure that each calling thread 
+has its own set of BufReaders for each file.
+
+The "blazingly fast key store" works as follows:
+- Main thread calls open on Bitcask. This returns a Bitcask instance. The open function creates one writer, and creates n readers, 
+ where n is the number of cores. Each reader gets its own LRU cache of File handles (called LogReaders). It sticks all of this into "the handle"
+- The worker threads call "get handle" on the bitcask instance. This handle contains the thread safe queue of readers, the writer, and a wrapper around shared state.
+- The worker thread calls get, put, delete, merge, on this handle. If the worker calls get, then one of the N readers performs the necessary read of the data file.
+    (These readers are shared across all threads via the handle, but each reader has a file handle on each data file)
+
+In my implementation, I want to leave the choice of parallelism up to the user, so I think I'd just allow every thread to have it's own set of reader file handles,
+but to share the same writer. 
+
+### Performance testing
+I should implement a way to inject configurations, and then use the Criterion crate to test different configurations.
+
 ### Other design decisions
 - memory mapped vs standard i/o. memory mapped = virtual memory system takes care of buffering.
 - We can still buffer with memory mapped i/o, if we need to read larger chunks.
