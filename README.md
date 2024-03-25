@@ -131,3 +131,13 @@ Cons:
 - Implement logging with tracing crate
 - Clean up code to use more abstractions. I can use this implementation as a reference: https://github.com/ltungv/bitcask/blob/master/src/storage/bitcask/log.rs#L19.
     E.g. I like how we built his own type that implements writer, which does extra things. 
+
+### Memory mapping vs. buffered reads
+I should do a performance experiment to see which is faster. Memory mappings seems like it might be more efficient for random reads (less read syscalls), at the expense
+of increasing the memory usage of the process.
+
+TODO: It would be very interesting to ping the "blazingly fast bitcask in Rust" person, and see why they chose to use memory mapped io instead of just buffering. 
+It's interesting that they just used buffered reads while building the keydir, but use memory mapped files for normal operations. 
+Once I have an answer from this person, it would be very interesting to touch on this topic of memory mapped vs. buffered reads in a blog post. Of course I need some performance tests set up.
+
+If you used memory mapped files while building the keystore, you would map all the data files into memory! Not ideal. But over course of normal operation, you can just map in the most frequently accessed sections.
