@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    backtrace::Backtrace,
+    io,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -9,4 +13,5 @@ pub enum RustcaskError {
 
     #[error("Open must be passed a valid and pre-existing directory. Invalid directory: {0}")]
     BadRustcaskDirectory(PathBuf),
+    // TODO [RyanStan 3-25-24]: Learn how to use this crate and add an IO error.
 }

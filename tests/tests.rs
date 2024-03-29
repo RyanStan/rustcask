@@ -192,18 +192,12 @@ fn get_stored_value() {
     drop(store);
 
     // Open from disk and check persistent data
-    /*
+
+    // stack overflow!
     let mut store = RustCask::open(temp_dir.path()).unwrap();
-    assert_eq!(
-        store.get(&String::from(keys[0])),
-        Some(&String::from(values[0]))
-    );
-    /
-    assert_eq!(
-        store.get(&String::from(keys[1])),
-        Some(&String::from(values[1]))
-    );
-    */
+    assert_eq!(store.get(&keys[0]), Some(values[0].clone()));
+
+    assert_eq!(store.get(&keys[1]), Some(values[1].clone()));
 }
 
 #[test]
