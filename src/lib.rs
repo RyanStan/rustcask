@@ -51,10 +51,9 @@ impl RustCask {
     /// Inserts a key-value pair into the map.
     /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
-        // TODO: is this key clone ok?
         let data_file_entry = LogFileEntry {
             key: key.clone(),
-            value,
+            value: Some(value),
         };
 
         let encoded =
@@ -93,7 +92,7 @@ impl RustCask {
                 &keydir_entry.data_file_gen
             ));
 
-        reader.seek(SeekFrom::Start(keydir_entry.index.offset));
+        reader.seek(SeekFrom::Start(keydir_entry.index.offset)).unwrap();
         let data_file_entry: LogFileEntry =
             bincode::deserialize_from(reader).expect("Error deserializing data");
 
@@ -102,14 +101,32 @@ impl RustCask {
             "The deserialized entries key does not match the key passed to get"
         );
 
-        Some(data_file_entry.value)
+        Some(data_file_entry.value.expect("We returned a tombstone value from get. We should have instead returned None"))
     }
 
     /// Removes a key from the store, returning the value at the key
     /// if the key was previously in the map.
     pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RustcaskError> {
-        // TODO: implement
-        Ok(None)
+
+        // TODO: unit test to confirm I remove entry from the keydir
+
+        match self.keydir.remove(&key) {
+            None => Ok(None),
+            Some(keydir_entry) => {
+                let tombstone = LogFileEntry::create_tombstone_entry(key);
+                let encoded_tombstone = bincode::serialize(&tombstone)
+                    .expect("Could not serialize tombstone");
+                self.active_data_file_writer
+                    .write_all(&encoded_tombstone)
+                    .expect("Failed to write data file entry to stream");
+                self.active_data_file_writer.flush().unwrap();
+
+                // TODO [RyanStan 04-06-24] Return the old value instead of None.
+                // I need to create a method that I can use to get the value without duplicating code
+                // from the get method.
+                Ok(None)
+            }
+        }
     }
 
     pub fn open(rustcask_dir: &Path) -> Result<RustCask, RustcaskError> {
@@ -145,7 +162,7 @@ impl RustCask {
             active_data_file_writer,
             data_file_readers,
             directory: rustcask_dir,
-            keydir: KeyDir::new(),
+            keydir: keydir,
         })
     }
 }
@@ -168,7 +185,11 @@ fn populate_keydir_with_data_file(
 ) {
     let log_iter = LogFileIterator::new(data_file).unwrap();
     for (entry, index) in log_iter {
-        keydir.set(entry.key, data_file_gen, index);
+        if entry.value.is_none() {
+            keydir.remove(&entry.key);
+        } else {
+            keydir.set(entry.key, data_file_gen, index);
+        }
     }
 }
 
@@ -308,7 +329,7 @@ mod tests {
         let value = "value".as_bytes().to_vec();
 
         // encode the entry into the file
-        let data_file_entry = LogFileEntry { key, value };
+        let data_file_entry = LogFileEntry { key, value: Some(value) };
 
         let encoded = bincode::serialize(&data_file_entry).unwrap();
 

@@ -9,7 +9,18 @@ use crate::{bufio::BufReaderWithPos, utils::data_file_path};
 pub struct LogFileEntry {
     //TODO [RyanStan 03/05/24] Add CRC and timestamp
     pub key: Vec<u8>,
-    pub value: Vec<u8>,
+
+    // None is used as a tombstone marker
+    pub value: Option<Vec<u8>>,
+}
+
+impl LogFileEntry {
+    pub fn create_tombstone_entry(key: Vec<u8>) -> Self {
+        Self {
+            key,
+            value: None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -92,7 +103,7 @@ mod tests {
     fn test_log_iter_single_entry() {
         let entry = LogFileEntry {
             key: "key".as_bytes().to_vec(),
-            value: "value".as_bytes().to_vec(),
+            value: Some("value".as_bytes().to_vec()),
         };
         let mut entries = Vec::new();
         entries.push(entry);
@@ -119,11 +130,11 @@ mod tests {
         let entries = Vec::from([
             LogFileEntry {
                 key: "key".as_bytes().to_vec(),
-                value: "value".as_bytes().to_vec(),
+                value: Some("value".as_bytes().to_vec()),
             },
             LogFileEntry {
                 key: "key2".as_bytes().to_vec(),
-                value: "value2".as_bytes().to_vec(),
+                value: Some("value2".as_bytes().to_vec()),
             },
         ]);
         let expected_num_entries = entries.len();

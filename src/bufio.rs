@@ -48,7 +48,7 @@ where
     R: Read + Seek,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let offset = self.seek(pos)?;
+        let offset = self.reader.seek(pos)?;
         self.pos = offset;
         Ok(offset)
     }

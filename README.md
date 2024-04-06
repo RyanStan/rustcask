@@ -141,3 +141,9 @@ It's interesting that they just used buffered reads while building the keydir, b
 Once I have an answer from this person, it would be very interesting to touch on this topic of memory mapped vs. buffered reads in a blog post. Of course I need some performance tests set up.
 
 If you used memory mapped files while building the keystore, you would map all the data files into memory! Not ideal. But over course of normal operation, you can just map in the most frequently accessed sections.
+
+
+### Journal
+4/6: Implemented remove and fixed bug in get that caused stack overflows. 
+Next up: I should clean up logging (tracing crate) and errors (anyhow and thiserror). 
+Then implement merge/compaction and hint files. Then clean up the threading stuff - each thread shold have a way to get its own set of readers, but still share the same writer.

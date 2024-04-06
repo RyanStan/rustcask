@@ -28,4 +28,10 @@ impl KeyDir {
     pub fn get(&mut self, key: &Vec<u8>) -> Option<&KeyDirEntry> {
         self.keydir.get(key)
     }
+
+    /// Removes a key from the keydir, returning the entry at the key
+    /// if the key was previously in the map.
+    pub fn remove(&mut self, key: &Vec<u8>) -> Option<KeyDirEntry> {
+        self.keydir.remove(key)
+    }
 }
