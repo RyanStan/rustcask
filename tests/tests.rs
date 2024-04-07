@@ -1,7 +1,6 @@
 use assert_cmd::prelude::*;
+use rustcask::rustcask::RustCask;
 
-
-use rustcask::RustCask;
 use std::fs::{self};
 
 use std::path::Path;
