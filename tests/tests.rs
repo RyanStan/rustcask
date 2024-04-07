@@ -1,13 +1,12 @@
 use assert_cmd::prelude::*;
-use predicates::ord::eq;
-use predicates::str::{contains, is_empty};
+
+
 use rustcask::RustCask;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self};
+
 use std::path::Path;
-use std::process::Command;
-use tempfile::{tempdir, TempDir};
-use walkdir::WalkDir;
+
+use tempfile::{TempDir};
 
 
 #[test]

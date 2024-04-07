@@ -1,10 +1,12 @@
-use crate::{error::RustcaskError, logfile::LogIndex, GenerationNumber};
+use crate::{logfile::LogIndex, GenerationNumber};
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct KeyDir {
     keydir: HashMap<Vec<u8>, KeyDirEntry>,
 }
 
+#[derive(Debug)]
 pub struct KeyDirEntry {
     pub data_file_gen: GenerationNumber,
     pub index: LogIndex,
@@ -25,7 +27,7 @@ impl KeyDir {
         self.keydir.insert(key, keydir_entry);
     }
 
-    pub fn get(&mut self, key: &Vec<u8>) -> Option<&KeyDirEntry> {
+    pub fn get(&self, key: &Vec<u8>) -> Option<&KeyDirEntry> {
         self.keydir.get(key)
     }
 

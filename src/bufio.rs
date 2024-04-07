@@ -1,4 +1,7 @@
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::{
+    fs::File,
+    io::{self, BufReader, Read, Seek, SeekFrom},
+};
 
 /// A wrapper a round `BufReader` that keeps track of the current position within the inner reader.
 /// This code is adapted from https://github.com/ltungv/bitcask/blob/master/src/storage/bitcask/bufio.rs.
@@ -7,6 +10,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 /// reader, then you have to use the seek method with a relative offset of zero.
 /// However, on BufReaders, the seek method has the side effect of emptying the buffer.
 /// That's why we need this wrapper class which tracks the read position.
+#[derive(Debug)]
 pub struct BufReaderWithPos<R>
 where
     R: Read + Seek,
@@ -51,5 +55,15 @@ where
         let offset = self.reader.seek(pos)?;
         self.pos = offset;
         Ok(offset)
+    }
+}
+
+impl Clone for BufReaderWithPos<File> {
+    fn clone(&self) -> Self {
+        let internal_reader = self.reader.get_ref().try_clone().unwrap();
+        Self {
+            pos: 0,
+            reader: BufReader::new(internal_reader),
+        }
     }
 }

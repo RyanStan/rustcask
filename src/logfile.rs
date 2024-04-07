@@ -2,7 +2,7 @@ use std::{fs::File, io, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{bufio::BufReaderWithPos, utils::data_file_path};
+use crate::{bufio::BufReaderWithPos};
 
 /// Represents an entry in the data or hint files.
 #[derive(Serialize, Clone, Deserialize, Debug, PartialEq)]
@@ -16,10 +16,7 @@ pub struct LogFileEntry {
 
 impl LogFileEntry {
     pub fn create_tombstone_entry(key: Vec<u8>) -> Self {
-        Self {
-            key,
-            value: None,
-        }
+        Self { key, value: None }
     }
 }
 
@@ -143,15 +140,17 @@ mod tests {
             setup_data_file(entries.clone());
         let log_iter = LogFileIterator::new(data_file_path).unwrap();
         let data_entries: Vec<(LogFileEntry, LogIndex)> = log_iter.collect();
-        
+
         assert_eq!(data_entries.len(), expected_num_entries);
         for (i, entry) in data_entries.iter().enumerate() {
             assert_eq!(entry.0, entries[i]);
-            assert_eq!(entry.1, LogIndex {
-                len: entry_lens[i] as u64,
-                offset: entry_offsets[i] as u64
-            })
+            assert_eq!(
+                entry.1,
+                LogIndex {
+                    len: entry_lens[i] as u64,
+                    offset: entry_offsets[i] as u64
+                }
+            )
         }
-
     }
 }

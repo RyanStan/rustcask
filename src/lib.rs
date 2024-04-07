@@ -5,15 +5,15 @@ use bufio::BufReaderWithPos;
 use keydir::KeyDir;
 use logfile::{LogFileEntry, LogFileIterator, LogIndex};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::borrow::BorrowMut;
+
+
 use std::fs::OpenOptions;
-use std::ops::Deref;
+
+use std::sync::{Arc, Mutex, RwLock};
 use std::{
     collections::HashMap,
     fs::{self, File},
-    hash::Hash,
-    io::{BufReader, BufWriter, Seek, SeekFrom, Write},
+    io::{BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -25,18 +25,13 @@ mod utils;
 
 type GenerationNumber = u64;
 
+#[derive(Clone, Debug)]
 pub struct RustCask {
     active_generation: GenerationNumber,
-    active_data_file_writer: BufWriter<File>,
+    active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
 
     // TODO [RyanStan 2-28-24] Keeping a file handle for every open file may cause us to hit
     // system open file handle limits. We should use a LRU cache instead.
-    //
-    // TODO [RyanStan 3-18-24] Threads are expected to share a RustCask instance. Therefore,
-    // they must share this set of BufReaders. This limits parallelism because a read on a data file
-    // can only be performed by one thread at a time. We should instead allow each user thread
-    // to have its own set of open file handles to the data and hint files. This way we can have multiple concurrent
-    // reads on the same file at once.
     //
     // A buffered reader provides benefits when performing sequential reads of the
     // data and hint files during startup
@@ -44,13 +39,17 @@ pub struct RustCask {
 
     directory: PathBuf,
 
-    keydir: KeyDir,
+    keydir: Arc<RwLock<KeyDir>>,
 }
 
 impl RustCask {
     /// Inserts a key-value pair into the map.
     /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
+        // To maintain correctness with concurrent reads, 'set' must insert an entry into the active data file,
+        // and then update the keydir. This way, a concurrent read does not see an entry in the keydir
+        // before the corresponding value has been written to the data file.
+
         let data_file_entry = LogFileEntry {
             key: key.clone(),
             value: Some(value),
@@ -59,20 +58,27 @@ impl RustCask {
         let encoded =
             bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
 
-        let file_offset = self.active_data_file_writer.stream_position().unwrap();
-        self.active_data_file_writer
+        let mut writer = self
+            .active_data_file_writer
+            .lock()
+            .expect("Writer lock was poisoned");
+        let file_offset = writer.stream_position().unwrap();
+        writer
             .write_all(&encoded)
             .expect("Failed to write data file entry to stream");
-        self.active_data_file_writer.flush().unwrap();
+        writer.flush().unwrap();
 
-        self.keydir.set(
-            key,
-            self.active_generation,
-            LogIndex {
-                offset: file_offset,
-                len: encoded.len().try_into().unwrap(),
-            },
-        );
+        self.keydir
+            .write()
+            .expect("Keydir write lock was poisoned")
+            .set(
+                key,
+                self.active_generation,
+                LogIndex {
+                    offset: file_offset,
+                    len: encoded.len().try_into().unwrap(),
+                },
+            );
 
         Ok(())
 
@@ -81,8 +87,10 @@ impl RustCask {
         // E.g. see https://github.com/dragonquest/bitcask/blob/master/src/database.rs#L415-L423.
     }
 
+    
     pub fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
-        let keydir_entry = self.keydir.get(key)?;
+        let keydir = self.keydir.read().unwrap();
+        let keydir_entry = keydir.get(key)?;
 
         let reader = self
             .data_file_readers
@@ -92,39 +100,41 @@ impl RustCask {
                 &keydir_entry.data_file_gen
             ));
 
-        reader.seek(SeekFrom::Start(keydir_entry.index.offset)).unwrap();
-        let data_file_entry: LogFileEntry =
-            bincode::deserialize_from(reader).expect("Error deserializing data");
-
-        assert_eq!(
-            &data_file_entry.key, key,
-            "The deserialized entries key does not match the key passed to get"
-        );
-
-        Some(data_file_entry.value.expect("We returned a tombstone value from get. We should have instead returned None"))
+        read_value(reader, &keydir_entry.index, key)
     }
 
     /// Removes a key from the store, returning the value at the key
     /// if the key was previously in the map.
     pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RustcaskError> {
-
         // TODO: unit test to confirm I remove entry from the keydir
 
-        match self.keydir.remove(&key) {
+        // Remove from data file before removing from keydir?
+        // Add remove into keydir, then update other thing if needed
+        let tombstone = LogFileEntry::create_tombstone_entry(key);
+        let encoded_tombstone =
+            bincode::serialize(&tombstone).expect("Could not serialize tombstone");
+        let mut writer = self.active_data_file_writer.lock().unwrap();
+        writer.write_all(&encoded_tombstone).unwrap();
+        writer.flush().unwrap();
+
+        match self
+            .keydir
+            .write()
+            .expect("Keydir write lock was poisoned")
+            .remove(&tombstone.key)
+        {
             None => Ok(None),
             Some(keydir_entry) => {
-                let tombstone = LogFileEntry::create_tombstone_entry(key);
-                let encoded_tombstone = bincode::serialize(&tombstone)
-                    .expect("Could not serialize tombstone");
-                self.active_data_file_writer
-                    .write_all(&encoded_tombstone)
-                    .expect("Failed to write data file entry to stream");
-                self.active_data_file_writer.flush().unwrap();
-
                 // TODO [RyanStan 04-06-24] Return the old value instead of None.
-                // I need to create a method that I can use to get the value without duplicating code
-                // from the get method.
-                Ok(None)
+                let reader = self
+                    .data_file_readers
+                    .get_mut(&keydir_entry.data_file_gen)
+                    .expect(&format!(
+                        "Could not find reader for generation {}",
+                        &keydir_entry.data_file_gen
+                    ));
+    
+                Ok(read_value(reader, &keydir_entry.index, &tombstone.key))
             }
         }
     }
@@ -151,20 +161,40 @@ impl RustCask {
             .open(data_file_path(&rustcask_dir, &active_generation))
             .expect("Error opening active data file");
 
-        let active_data_file_writer = BufWriter::new(active_data_file);
+        let active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
 
-        let mut data_file_readers = create_data_file_readers(&rustcask_dir);
+        let data_file_readers = create_data_file_readers(&rustcask_dir);
 
-        let keydir = build_keydir(&generations, &rustcask_dir);
+        let keydir = Arc::new(RwLock::new(build_keydir(&generations, &rustcask_dir)));
 
         Ok(RustCask {
             active_generation,
             active_data_file_writer,
             data_file_readers,
             directory: rustcask_dir,
-            keydir: keydir,
+            keydir,
         })
     }
+}
+
+/// Return the value from reader at the given index
+fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &Vec<u8>) -> Option<Vec<u8>> {
+    reader
+        .seek(SeekFrom::Start(log_index.offset))
+        .unwrap();
+    let data_file_entry: LogFileEntry =
+        bincode::deserialize_from(reader).expect("Error deserializing data");
+
+    assert_eq!(
+        &data_file_entry.key, key,
+        "The deserialized entries key does not match the key passed to get"
+    );
+
+    Some(
+        data_file_entry.value.expect(
+            "We returned a tombstone value from get. We should have instead returned None",
+        ),
+    )
 }
 
 // TODO [RyanStan 3-25-24] Implement hint files.
@@ -329,7 +359,10 @@ mod tests {
         let value = "value".as_bytes().to_vec();
 
         // encode the entry into the file
-        let data_file_entry = LogFileEntry { key, value: Some(value) };
+        let data_file_entry = LogFileEntry {
+            key,
+            value: Some(value),
+        };
 
         let encoded = bincode::serialize(&data_file_entry).unwrap();
 

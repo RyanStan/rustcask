@@ -147,3 +147,17 @@ If you used memory mapped files while building the keystore, you would map all t
 4/6: Implemented remove and fixed bug in get that caused stack overflows. 
 Next up: I should clean up logging (tracing crate) and errors (anyhow and thiserror). 
 Then implement merge/compaction and hint files. Then clean up the threading stuff - each thread shold have a way to get its own set of readers, but still share the same writer.
+Update: I'm going to re-write so the threading stuff works. Then go from there.
+
+Leaving concurrency up to the caller is probably not what we want. They may have to make extra API calls,
+or synchronize their own write calls ... It's easier to let them just specify the concurrency of the rustcask instance
+and then handle it for them.
+
+4/7: Finished concurrency re-write. And cleaned up remove. On to closing data files once they get a certain size.
+    Then do logging, error, and benchmarks. Then hint files + merging. Then done!
+
+### Concurrency in LevelDB:
+A database may only be opened by one process at a time. The leveldb implementation acquires a lock from the operating system to prevent misuse. Within a single process, the same leveldb::DB object may be safely shared by multiple concurrent threads. I.e., different threads may write into or fetch iterators or call Get on the same database without any external synchronization (the leveldb implementation will automatically do the required synchronization). However other objects (like Iterator and WriteBatch) may require external synchronization. If two threads share such an object, they must protect access to it using their own locking protocol. More details are available in the public header files.
+
+And how I should handle it here:
+Since each thread has to clone leveldb anyways, then they'll get cloned readers! And they can share the same writer

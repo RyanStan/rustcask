@@ -1,7 +1,5 @@
 use std::{
-    backtrace::Backtrace,
-    io,
-    path::{Path, PathBuf},
+    path::{PathBuf},
 };
 
 use thiserror::Error;
