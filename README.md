@@ -156,8 +156,14 @@ and then handle it for them.
 4/7: Finished concurrency re-write. And cleaned up remove. On to closing data files once they get a certain size.
     Then do logging, error, and benchmarks. Then hint files + merging. Then done!
 
+4/10: Implement logic to close active data file if its too big
+
+4/11: I think I implemented the data file rotation logic. I just need to write some tests for it next.
+
 ### Concurrency in LevelDB:
 A database may only be opened by one process at a time. The leveldb implementation acquires a lock from the operating system to prevent misuse. Within a single process, the same leveldb::DB object may be safely shared by multiple concurrent threads. I.e., different threads may write into or fetch iterators or call Get on the same database without any external synchronization (the leveldb implementation will automatically do the required synchronization). However other objects (like Iterator and WriteBatch) may require external synchronization. If two threads share such an object, they must protect access to it using their own locking protocol. More details are available in the public header files.
 
 And how I should handle it here:
 Since each thread has to clone leveldb anyways, then they'll get cloned readers! And they can share the same writer
+
+// TODO: move the builder back over.. since lots of shared methods.

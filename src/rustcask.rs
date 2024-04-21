@@ -19,24 +19,36 @@ use std::{
 
 pub type GenerationNumber = u64;
 
+pub const MAX_DATA_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
 #[derive(Clone, Debug)]
 pub struct RustCask {
-    active_generation: GenerationNumber,
-    active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
+    pub(crate) active_generation: GenerationNumber,
+    pub(crate) active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
 
     // TODO [RyanStan 2-28-24] Keeping a file handle for every open file may cause us to hit
     // system open file handle limits. We should use a LRU cache instead.
     //
     // A buffered reader provides benefits when performing sequential reads of the
     // data and hint files during startup
-    data_file_readers: HashMap<GenerationNumber, BufReaderWithPos<File>>,
+    pub(crate) data_file_readers: HashMap<GenerationNumber, BufReaderWithPos<File>>,
 
-    directory: PathBuf,
+    pub(crate) directory: PathBuf,
 
-    keydir: Arc<RwLock<KeyDir>>,
+    pub(crate) keydir: Arc<RwLock<KeyDir>>,
+
+
+    pub(crate) max_data_file_size: u64,
+
+    // Bytes written to the active data file
+    pub(crate) active_data_file_size: u64,
 }
 
 impl RustCask {
+    pub fn builder() -> RustCaskBuilder {
+        RustCaskBuilder::default()
+    }
+
     /// Inserts a key-value pair into the map.
     /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
@@ -61,6 +73,8 @@ impl RustCask {
             .write_all(&encoded)
             .expect("Failed to write data file entry to stream");
         writer.flush().unwrap();
+        self.active_data_file_size += encoded.len() as u64;
+
 
         self.keydir
             .write()
@@ -74,11 +88,43 @@ impl RustCask {
                 },
             );
 
-        Ok(())
-
         // TODO [RyanStan]: if the active data file becomes larger than some size, then close it
         // and open a new active data file.
         // E.g. see https://github.com/dragonquest/bitcask/blob/master/src/database.rs#L415-L423.
+        if self.active_data_file_size >= self.max_data_file_size {
+            // TODO: extract below code into a "rotate active data file" function
+            drop(writer);
+            self.rotate_active_data_file();
+        }
+
+        Ok(())
+    }
+
+
+    /// Increment the active generation and update the writer and readers to reference
+    /// the new active data file.
+    fn rotate_active_data_file(&mut self) {
+        self.active_generation += 1;
+    
+        let active_data_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(data_file_path(&self.directory, &self.active_generation))
+            .expect("Error opening active data file");
+    
+        self.active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
+            
+        let reader = BufReaderWithPos::new(
+            File::open(data_file_path(&self.directory, &self.active_generation)).expect(&format!(
+                "Unable to open data file for generation {}",
+                &self.active_generation
+            )),
+        )
+        .unwrap();
+    
+        self.data_file_readers.insert(self.active_generation, reader);
+        self.active_data_file_size = 0;
     }
 
     
@@ -133,7 +179,48 @@ impl RustCask {
         }
     }
 
-    pub fn open(rustcask_dir: &Path) -> Result<RustCask, RustcaskError> {
+    
+}
+
+/// Return the value from reader at the given index
+fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &Vec<u8>) -> Option<Vec<u8>> {
+    reader
+        .seek(SeekFrom::Start(log_index.offset))
+        .unwrap();
+    let data_file_entry: LogFileEntry =
+        bincode::deserialize_from(reader).expect("Error deserializing data");
+
+    assert_eq!(
+        &data_file_entry.key, key,
+        "The deserialized entries key does not match the key passed to get"
+    );
+
+    Some(
+        data_file_entry.value.expect(
+            "We returned a tombstone value from get. We should have instead returned None",
+        ),
+    )
+}
+
+pub struct RustCaskBuilder {
+    max_data_file_size: u64
+}
+
+impl Default for RustCaskBuilder {
+    fn default() -> Self {
+        Self {
+            max_data_file_size: MAX_DATA_FILE_SIZE,
+        }
+    }
+}
+
+impl RustCaskBuilder {
+    pub fn set_max_data_file_size(mut self, max_size: u64) -> Self {
+        self.max_data_file_size = max_size;
+        self
+    }
+
+    pub fn open(self, rustcask_dir: &Path) -> Result<RustCask, RustcaskError> {
         let rustcask_dir = PathBuf::from(&rustcask_dir);
 
         if !rustcask_dir.is_dir() {
@@ -167,28 +254,50 @@ impl RustCask {
             data_file_readers,
             directory: rustcask_dir,
             keydir,
+            max_data_file_size: self.max_data_file_size,
+            active_data_file_size: 0
         })
+        
     }
 }
 
-/// Return the value from reader at the given index
-fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &Vec<u8>) -> Option<Vec<u8>> {
-    reader
-        .seek(SeekFrom::Start(log_index.offset))
+fn list_generations(rustcask_dir: &Path) -> Vec<GenerationNumber> {
+    let generations: Vec<GenerationNumber> = fs::read_dir(rustcask_dir)
+        .unwrap()
+        .map(|entry| -> PathBuf { entry.unwrap().path() })
+        .filter(is_data_file)
+        .map(parse_generation_number)
+        .collect();
+
+    generations
+}
+
+fn create_data_file_readers(
+    rustcask_dir: &Path,
+) -> HashMap<GenerationNumber, BufReaderWithPos<File>> {
+    let mut map = HashMap::new();
+    let generations = list_generations(&rustcask_dir);
+    for generation in generations {
+        let reader = BufReaderWithPos::new(
+            File::open(data_file_path(rustcask_dir, &generation)).expect(&format!(
+                "Unable to open data file for generation {}",
+                generation
+            )),
+        )
         .unwrap();
-    let data_file_entry: LogFileEntry =
-        bincode::deserialize_from(reader).expect("Error deserializing data");
+        map.insert(generation, reader);
+    }
+    map
+}
 
-    assert_eq!(
-        &data_file_entry.key, key,
-        "The deserialized entries key does not match the key passed to get"
-    );
+fn is_data_file(path: &PathBuf) -> bool {
+    let file_name = match path.file_name() {
+        Some(file) => file,
+        None => return false,
+    };
 
-    Some(
-        data_file_entry.value.expect(
-            "We returned a tombstone value from get. We should have instead returned None",
-        ),
-    )
+    let re = Regex::new(r"^\d+\.rustcask\.data$").unwrap();
+    re.is_match(&file_name.to_string_lossy())
 }
 
 // TODO [RyanStan 3-25-24] Implement hint files.
@@ -217,27 +326,6 @@ fn populate_keydir_with_data_file(
     }
 }
 
-fn list_generations(rustcask_dir: &Path) -> Vec<GenerationNumber> {
-    let generations: Vec<GenerationNumber> = fs::read_dir(rustcask_dir)
-        .unwrap()
-        .map(|entry| -> PathBuf { entry.unwrap().path() })
-        .filter(is_data_file)
-        .map(parse_generation_number)
-        .collect();
-
-    generations
-}
-
-fn is_data_file(path: &PathBuf) -> bool {
-    let file_name = match path.file_name() {
-        Some(file) => file,
-        None => return false,
-    };
-
-    let re = Regex::new(r"^\d+\.rustcask\.data$").unwrap();
-    re.is_match(&file_name.to_string_lossy())
-}
-
 /// Returns the generation of a hint or data file
 fn parse_generation_number(path: PathBuf) -> GenerationNumber {
     let file_name = path.file_name().unwrap().to_string_lossy();
@@ -249,28 +337,15 @@ fn parse_generation_number(path: PathBuf) -> GenerationNumber {
     generation
 }
 
-fn create_data_file_readers(
-    rustcask_dir: &Path,
-) -> HashMap<GenerationNumber, BufReaderWithPos<File>> {
-    let mut map = HashMap::new();
-    let generations = list_generations(&rustcask_dir);
-    for generation in generations {
-        let reader = BufReaderWithPos::new(
-            File::open(data_file_path(rustcask_dir, &generation)).expect(&format!(
-                "Unable to open data file for generation {}",
-                generation
-            )),
-        )
-        .unwrap();
-        map.insert(generation, reader);
-    }
-    map
-}
-
 #[cfg(test)]
 mod tests {
+    use std::{fs::File, io::Write};
+
+    use crate::logfile::LogFileEntry;
+
     use super::*;
     use tempfile::{tempdir, TempDir};
+    use tracing::debug;
 
     #[test]
     fn test_is_data_file() {
@@ -283,17 +358,6 @@ mod tests {
 
         let random_file = dir.path().join("/tmp/3432432/some-lock-file.lock");
         assert!(!is_data_file(&random_file));
-    }
-
-    #[test]
-    fn test_parse_generation_number() {
-        let dir = tempdir().unwrap();
-        let data_file = dir.path().join("/tmp/384304/0.rustcask.data");
-        assert_eq!(parse_generation_number(data_file), 0);
-
-        let dir = tempdir().unwrap();
-        let data_file = dir.path().join("/tmp/384304/1000.rustcask.hint");
-        assert_eq!(parse_generation_number(data_file), 1000);
     }
 
     #[test]
@@ -312,6 +376,18 @@ mod tests {
         assert_eq!(generations, expected_gen_values);
     }
 
+
+    #[test]
+    fn test_parse_generation_number() {
+        let dir = tempdir().unwrap();
+        let data_file = dir.path().join("/tmp/384304/0.rustcask.data");
+        assert_eq!(parse_generation_number(data_file), 0);
+
+        let dir = tempdir().unwrap();
+        let data_file = dir.path().join("/tmp/384304/1000.rustcask.hint");
+        assert_eq!(parse_generation_number(data_file), 1000);
+    }
+
     #[test]
     fn test_open() {
         let dir = tempdir().unwrap();
@@ -321,7 +397,7 @@ mod tests {
             File::create(dir.path().join(format!("{}.rustcask.hint", number))).unwrap();
         }
 
-        let rustcask = RustCask::open(dir.path()).unwrap();
+        let rustcask = RustCask::builder().open(dir.path()).unwrap();
 
         assert_eq!(rustcask.active_generation, 5);
         assert_eq!(rustcask.data_file_readers.len(), 5);
@@ -330,7 +406,7 @@ mod tests {
     #[test]
     fn test_open_on_empty_dir() {
         let dir = tempdir().unwrap();
-        let rustcask = RustCask::open(dir.path()).unwrap();
+        let rustcask = RustCask::builder().open(dir.path()).unwrap();
         assert_eq!(rustcask.active_generation, 0);
         assert_eq!(rustcask.data_file_readers.len(), 1);
     }
@@ -339,7 +415,7 @@ mod tests {
     fn test_open_non_existent_dir() {
         let dir = tempdir().unwrap();
         let invalid_dir = dir.path().join("invalid-dir");
-        let rustcask = RustCask::open(&invalid_dir);
+        let rustcask = RustCask::builder().open(&invalid_dir);
         assert!(matches!(rustcask, Err(BadRustcaskDirectory(_))));
     }
 
@@ -363,4 +439,35 @@ mod tests {
         data_file.write_all(&encoded);
         data_file.flush().unwrap();
     }
+
+    #[test]
+    fn test_data_file_rotation() {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let temp_dir_path = temp_dir.path();
+        // Force log file rotation by setting the max data file size to one byte
+        let mut store = RustCask::builder().set_max_data_file_size(1).open(temp_dir_path).unwrap();
+
+
+        let keys = ["key1".as_bytes().to_vec(), "key2".as_bytes().to_vec()];
+        let values = ["value1".as_bytes().to_vec(), "value2".as_bytes().to_vec()];
+
+        assert_eq!(store.active_generation, 0);
+        assert_eq!(store.data_file_readers.len(), 1);
+        assert_eq!(store.active_data_file_size, 0);
+        
+
+        store.set(keys[0].clone(), values[0].clone()).unwrap();
+
+        assert_eq!(store.active_generation, 1);
+        assert_eq!(store.data_file_readers.len(), 2);
+        assert_eq!(store.active_data_file_size, 0);
+        assert_eq!(store.get(&keys[0].clone()), Some(values[0].clone()));
+
+        let data_files = fs::read_dir(temp_dir_path).unwrap();
+        let data_files: Vec<String> = data_files.map(|dir_entry| dir_entry.unwrap().path().file_name().unwrap().to_str().unwrap().to_string()).collect();
+
+        let expected_data_files = vec!["0.rustcask.data", "1.rustcask.data"];
+        assert_eq!(data_files, expected_data_files);
+    }
+
 }
