@@ -167,3 +167,14 @@ And how I should handle it here:
 Since each thread has to clone leveldb anyways, then they'll get cloned readers! And they can share the same writer
 
 // TODO: move the builder back over.. since lots of shared methods.
+
+
+### Performance
+My ssd data sheet: https://www.mouser.com/datasheet/2/146/ssd_pro_6000p_brief-2474541.pdf
+I'm hitting about hardware entitlement for sequential writes
+
+How should I handle durability? Should I sync every write to disk? That kills performance.
+Databases use group commit, and bundle writes to disk together.
+
+See how rocksdb handles it: https://github.com/facebook/rocksdb/wiki/WAL-Performance.
+TODO: I should see how bitcask handles it, but I think I'll avoid syncing, and mention the durability thing in the README.

@@ -72,7 +72,10 @@ impl RustCask {
         writer
             .write_all(&encoded)
             .expect("Failed to write data file entry to stream");
+        // Flush just makes sure that the bufwriter writes data to the file.
+        // TODO: should I sync to disk after every writes?
         writer.flush().unwrap();
+        //writer.get_ref().sync_all().unwrap(); // TODO... should I make this configurable? How do leveldb and rocksdb handle it? --> notes in readme.
         self.active_data_file_size += encoded.len() as u64;
 
 
