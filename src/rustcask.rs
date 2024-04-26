@@ -42,6 +42,8 @@ pub struct RustCask {
 
     // Bytes written to the active data file
     pub(crate) active_data_file_size: u64,
+
+    sync_mode: bool,
 }
 
 impl RustCask {
@@ -72,12 +74,12 @@ impl RustCask {
         writer
             .write_all(&encoded)
             .expect("Failed to write data file entry to stream");
-        // Flush just makes sure that the bufwriter writes data to the file.
-        // TODO: should I sync to disk after every writes?
         writer.flush().unwrap();
-        //writer.get_ref().sync_all().unwrap(); // TODO... should I make this configurable? How do leveldb and rocksdb handle it? --> notes in readme.
+        if self.sync_mode {
+            // Force the write to disk.
+            writer.get_ref().sync_all().unwrap();
+        }
         self.active_data_file_size += encoded.len() as u64;
-
 
         self.keydir
             .write()
@@ -159,6 +161,10 @@ impl RustCask {
         let mut writer = self.active_data_file_writer.lock().unwrap();
         writer.write_all(&encoded_tombstone).unwrap();
         writer.flush().unwrap();
+        if self.sync_mode {
+            // Force the write to disk.
+            writer.get_ref().sync_all().unwrap();
+        }
 
         match self
             .keydir
@@ -206,13 +212,20 @@ fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &V
 }
 
 pub struct RustCaskBuilder {
-    max_data_file_size: u64
+    max_data_file_size: u64,
+
+    /// When sync mode is true, writes to the data file
+    /// are fsync'ed before returning to the user.
+    /// This guarantees that data is durable and persisted to disk immediately, 
+    /// at the expense of reduced performance
+    sync_mode: bool
 }
 
 impl Default for RustCaskBuilder {
     fn default() -> Self {
         Self {
             max_data_file_size: MAX_DATA_FILE_SIZE,
+            sync_mode: false
         }
     }
 }
@@ -220,6 +233,11 @@ impl Default for RustCaskBuilder {
 impl RustCaskBuilder {
     pub fn set_max_data_file_size(mut self, max_size: u64) -> Self {
         self.max_data_file_size = max_size;
+        self
+    }
+
+    pub fn set_sync_mode(mut self, sync_mode: bool) -> Self {
+        self.sync_mode = sync_mode;
         self
     }
 
@@ -258,7 +276,8 @@ impl RustCaskBuilder {
             directory: rustcask_dir,
             keydir,
             max_data_file_size: self.max_data_file_size,
-            active_data_file_size: 0
+            active_data_file_size: 0,
+            sync_mode: self.sync_mode
         })
         
     }

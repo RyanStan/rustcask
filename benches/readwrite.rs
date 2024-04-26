@@ -3,6 +3,7 @@ use rand::{distributions::{Distribution, Uniform}, Rng};
 use rustcask::rustcask::RustCask;
 use tempfile::TempDir;
 use divan::counter::BytesCount;
+use rand::prelude::SliceRandom;
 
 
 fn main() {
@@ -33,6 +34,7 @@ It would be cool to have a "real-life" benchmark. Some real application that use
 */
 
 const COUNT_KV_PAIRS: usize = 1000;
+const OVERWRITE_COUNT: usize = 30;
 const KEY_SIZE: usize = 1024; // 1 KiB
 const VAL_SIZE: usize = 8096; // 8 KiB
 
@@ -82,11 +84,10 @@ fn bench_writes(bencher: Bencher) {
         });
 }
 
-// TODO
 #[divan::bench]
-fn bench_reads(bencher: Bencher) {
+fn bench_writes_sync_mode(bencher: Bencher) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let store = RustCask::builder().set_sync_mode(true).open(temp_dir.path()).unwrap();
 
     bencher
         .with_inputs(move || {
@@ -97,5 +98,55 @@ fn bench_reads(bencher: Bencher) {
         .input_counter(|(kv_pair, _)| BytesCount::new(kv_pair.0.len() + kv_pair.1.len()))
         .bench_values(|(kv_pair, mut store)| {
             store.set(kv_pair.0, kv_pair.1)
+        });
+}
+
+#[divan::bench]
+fn bench_random_reads(bencher: Bencher) {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut rng: rand::prelude::ThreadRng = rand::thread_rng();
+    let kv_pairs = KeyValuePair::random_many(&mut rng, COUNT_KV_PAIRS, KEY_SIZE, VAL_SIZE);
+    for kv_pair in kv_pairs.clone() {
+        store.set(kv_pair.0, kv_pair.1).unwrap();
+    }
+
+    bencher
+        .with_inputs(move || {
+            let store = store.clone();
+            let mut rng = rand::thread_rng();
+            let rand_index = rng.gen_range(0..kv_pairs.len());
+            let rand_kv_pair = kv_pairs[rand_index].clone();
+            (rand_kv_pair, store)
+        })
+        .input_counter(|(rand_kv_pair, _)| BytesCount::new(rand_kv_pair.0.len() + rand_kv_pair.1.len()))
+        .bench_values(|(kv_pair, mut store)| {
+            store.get(&kv_pair.0)
+        });
+}
+
+#[divan::bench()]
+fn bench_open_hint_files_disabled(bencher: Bencher) {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut rng: rand::prelude::ThreadRng = rand::thread_rng();
+    let kv_pairs = KeyValuePair::random_many(&mut rng, COUNT_KV_PAIRS, KEY_SIZE, VAL_SIZE);
+    for kv_pair in kv_pairs.clone() {
+        store.set(kv_pair.0, kv_pair.1).unwrap();
+    }
+
+    // Overwrite a number of keys.
+    // This should make the benefits of hint files more obvious.
+    let sample_kv_pairs: Vec<&KeyValuePair> = kv_pairs.choose_multiple(&mut rng, OVERWRITE_COUNT).collect();
+    for kv_pair in sample_kv_pairs {
+        let rand_value = (0..VAL_SIZE).map(|_| rng.gen::<u8>()).collect();
+        store.set(kv_pair.0.clone(), rand_value).unwrap();
+    }
+
+    drop(store);
+
+    bencher
+        .bench_local( || {
+            RustCask::builder().open(temp_dir.path()).unwrap();
         });
 }
