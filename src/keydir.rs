@@ -1,6 +1,6 @@
 use crate::logfile::LogIndex;
-use std::collections::HashMap;
 use crate::rustcask::GenerationNumber;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct KeyDir {

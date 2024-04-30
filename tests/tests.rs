@@ -5,10 +5,9 @@ use std::fs::{self};
 
 use std::path::Path;
 
-use tempfile::{TempDir};
+use tempfile::TempDir;
 
 // TODO: I can probabaly move all these tests to the rustcask file
-
 
 #[test]
 fn get_stored_value() {

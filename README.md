@@ -198,3 +198,6 @@ Create some documentation at the end of this
 ### Re-structuring
 I have a lot of logic in my rustcask.rs file. Is there a way to split this up?
 I should get rid of the rustcask.rs file.
+
+### Documentation
+Once the code is done, I should go through and do documentation. At least the main interface.

@@ -2,7 +2,7 @@ use std::{fs::File, io, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{bufio::BufReaderWithPos};
+use crate::bufio::BufReaderWithPos;
 
 /// Represents an entry in the data or hint files.
 #[derive(Serialize, Clone, Deserialize, Debug, PartialEq)]

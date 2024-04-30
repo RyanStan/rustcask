@@ -1,11 +1,10 @@
-use crate::error::RustcaskError;
-use crate::error::RustcaskError::BadRustcaskDirectory;
-use crate::utils::data_file_path;
 use crate::bufio::BufReaderWithPos;
+use crate::error::RustcaskError::BadRustcaskDirectory;
+use crate::error::{OpenError, OpenErrorKind, RemoveError, RemoveErrorKind, RustcaskError, SetError, SetErrorKind};
 use crate::keydir::KeyDir;
 use crate::logfile::{LogFileEntry, LogFileIterator, LogIndex};
+use crate::utils::data_file_path;
 use regex::Regex;
-
 
 use std::fs::OpenOptions;
 
@@ -38,7 +37,6 @@ pub struct RustCask {
 
     pub(crate) keydir: Arc<RwLock<KeyDir>>,
 
-
     pub(crate) max_data_file_size: u64,
 
     // Bytes written to the active data file
@@ -64,21 +62,33 @@ impl RustCask {
             value: Some(value),
         };
 
-        let encoded =
-            bincode::serialize(&data_file_entry).expect("Could not serialize data file entry");
+        let encoded = bincode::serialize(&data_file_entry).map_err(|err| SetError {
+            kind: SetErrorKind::Serialize(err),
+            key,
+        })?;
 
         let mut writer = self
             .active_data_file_writer
             .lock()
-            .expect("Writer lock was poisoned");
-        let file_offset = writer.stream_position().unwrap();
-        writer
-            .write_all(&encoded)
-            .expect("Failed to write data file entry to stream");
-        writer.flush().unwrap();
+            .expect("Another thread crashed while holding the keydir lock. Panicking.");
+        let file_offset = writer.stream_position().map_err(|err| SetError {
+            kind: SetErrorKind::SeekError(err),
+            key,
+        })?;
+        writer.write_all(&encoded).map_err(|err| SetError {
+            kind: SetErrorKind::DiskWrite(err),
+            key,
+        })?;
+        writer.flush().map_err(|err| SetError {
+            kind: SetErrorKind::DiskWrite(err),
+            key,
+        })?;
         if self.sync_mode {
             // Force the write to disk.
-            writer.get_ref().sync_all().unwrap();
+            writer.get_ref().sync_all().map_err(|err| SetError {
+                kind: SetErrorKind::DiskWrite(err),
+                key,
+            })?;
         }
         self.active_data_file_size += encoded.len() as u64;
 
@@ -106,21 +116,20 @@ impl RustCask {
         Ok(())
     }
 
-
     /// Increment the active generation and update the writer and readers to reference
     /// the new active data file.
     fn rotate_active_data_file(&mut self) {
         self.active_generation += 1;
-    
+
         let active_data_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(data_file_path(&self.directory, &self.active_generation))
             .expect("Error opening active data file");
-    
+
         self.active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
-            
+
         let reader = BufReaderWithPos::new(
             File::open(data_file_path(&self.directory, &self.active_generation)).expect(&format!(
                 "Unable to open data file for generation {}",
@@ -128,14 +137,17 @@ impl RustCask {
             )),
         )
         .unwrap();
-    
-        self.data_file_readers.insert(self.active_generation, reader);
+
+        self.data_file_readers
+            .insert(self.active_generation, reader);
         self.active_data_file_size = 0;
     }
 
-    
     pub fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
-        let keydir = self.keydir.read().unwrap();
+        let keydir = self
+            .keydir
+            .read()
+            .expect("Another thread panicked while holding the keydir lock. Panicking.");
         let keydir_entry = keydir.get(key)?;
 
         let reader = self
@@ -151,26 +163,36 @@ impl RustCask {
 
     /// Removes a key from the store, returning the value at the key
     /// if the key was previously in the map.
-    pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RustcaskError> {
-        // TODO: unit test to confirm I remove entry from the keydir
-
-        // Remove from data file before removing from keydir?
-        // Add remove into keydir, then update other thing if needed
+    pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RemoveError> {
         let tombstone = LogFileEntry::create_tombstone_entry(key);
         let encoded_tombstone =
             bincode::serialize(&tombstone).expect("Could not serialize tombstone");
-        let mut writer = self.active_data_file_writer.lock().unwrap();
-        writer.write_all(&encoded_tombstone).unwrap();
-        writer.flush().unwrap();
+        let mut writer = self
+            .active_data_file_writer
+            .lock()
+            .expect("Another thread panicked while holding the keydir lock. Panicking.");
+        writer
+            .write_all(&encoded_tombstone)
+            .map_err(|err| RemoveError {
+                kind: RemoveErrorKind::DiskWrite(err),
+                key,
+            })?;
+        writer.flush().map_err(|err| RemoveError {
+            kind: RemoveErrorKind::DiskWrite(err),
+            key,
+        })?;
         if self.sync_mode {
             // Force the write to disk.
-            writer.get_ref().sync_all().unwrap();
+            writer.get_ref().sync_all().map_err(|err| RemoveError {
+                kind: RemoveErrorKind::DiskWrite(err),
+                key,
+            })?;
         }
 
         match self
             .keydir
             .write()
-            .expect("Keydir write lock was poisoned")
+            .expect("Another thread panicked while holding the keydir lock. Panicking.")
             .remove(&tombstone.key)
         {
             None => Ok(None),
@@ -183,20 +205,20 @@ impl RustCask {
                         "Could not find reader for generation {}",
                         &keydir_entry.data_file_gen
                     ));
-    
+
                 Ok(read_value(reader, &keydir_entry.index, &tombstone.key))
             }
         }
     }
-
-    
 }
 
 /// Return the value from reader at the given index
-fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &Vec<u8>) -> Option<Vec<u8>> {
-    reader
-        .seek(SeekFrom::Start(log_index.offset))
-        .unwrap();
+fn read_value(
+    reader: &mut BufReaderWithPos<File>,
+    log_index: &LogIndex,
+    key: &Vec<u8>,
+) -> Result<Option<Vec<u8>>, io::Error> {
+    reader.seek(SeekFrom::Start(log_index.offset))?;
     let data_file_entry: LogFileEntry =
         bincode::deserialize_from(reader).expect("Error deserializing data");
 
@@ -205,11 +227,9 @@ fn read_value(reader: &mut BufReaderWithPos<File>, log_index: &LogIndex, key: &V
         "The deserialized entries key does not match the key passed to get"
     );
 
-    Some(
-        data_file_entry.value.expect(
-            "We returned a tombstone value from get. We should have instead returned None",
-        ),
-    )
+    Ok(Some(data_file_entry.value.expect(
+        "We returned a tombstone value from get. We should have instead returned None",
+    )))
 }
 
 pub struct RustCaskBuilder {
@@ -217,16 +237,16 @@ pub struct RustCaskBuilder {
 
     /// When sync mode is true, writes to the data file
     /// are fsync'ed before returning to the user.
-    /// This guarantees that data is durable and persisted to disk immediately, 
+    /// This guarantees that data is durable and persisted to disk immediately,
     /// at the expense of reduced performance
-    sync_mode: bool
+    sync_mode: bool,
 }
 
 impl Default for RustCaskBuilder {
     fn default() -> Self {
         Self {
             max_data_file_size: MAX_DATA_FILE_SIZE,
-            sync_mode: false
+            sync_mode: false,
         }
     }
 }
@@ -242,14 +262,17 @@ impl RustCaskBuilder {
         self
     }
 
-    pub fn open(self, rustcask_dir: &Path) -> Result<RustCask, RustcaskError> {
+    pub fn open(self, rustcask_dir: &Path) -> Result<RustCask, OpenError> {
         let rustcask_dir = PathBuf::from(&rustcask_dir);
 
         if !rustcask_dir.is_dir() {
             return Err(BadRustcaskDirectory(rustcask_dir));
         }
 
-        let mut generations: Vec<GenerationNumber> = list_generations(&rustcask_dir);
+        let mut generations: Vec<GenerationNumber> = list_generations(&rustcask_dir).map_err(|err| OpenError {
+            kind: OpenErrorKind::ListFiles(err),
+            rustcask_dir: rustcask_dir.to_string_lossy().to_string(),
+        })?;
         generations.sort_unstable();
 
         let active_generation: GenerationNumber = match generations.last() {
@@ -262,11 +285,17 @@ impl RustCaskBuilder {
             .write(true)
             .create(true)
             .open(data_file_path(&rustcask_dir, &active_generation))
-            .expect("Error opening active data file");
+            .map_err(|err| OpenError {
+                kind: OpenErrorKind::CreateActiveWriter(err),
+                rustcask_dir: rustcask_dir.to_string_lossy().to_string(),
+            })?;
 
         let active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
 
-        let data_file_readers = create_data_file_readers(&rustcask_dir);
+        let data_file_readers = create_data_file_readers(&rustcask_dir).map_err(|err| OpenError {
+            kind: OpenErrorKind::CreateDataFileReaders(err),
+            rustcask_dir: rustcask_dir.to_string_lossy().to_string(),
+        })?;
 
         let keydir = Arc::new(RwLock::new(build_keydir(&generations, &rustcask_dir)));
 
@@ -278,39 +307,40 @@ impl RustCaskBuilder {
             keydir,
             max_data_file_size: self.max_data_file_size,
             active_data_file_size: 0,
-            sync_mode: self.sync_mode
+            sync_mode: self.sync_mode,
         })
-        
     }
 }
 
-fn list_generations(rustcask_dir: &Path) -> Vec<GenerationNumber> {
-    let generations: Vec<GenerationNumber> = fs::read_dir(rustcask_dir)
-        .unwrap()
-        .map(|entry| -> PathBuf { entry.unwrap().path() })
-        .filter(is_data_file)
-        .map(parse_generation_number)
-        .collect();
+fn list_generations(rustcask_dir: &Path) -> Result<Vec<GenerationNumber>, io::Error> {
+    let mut generations: Vec<GenerationNumber> = Vec::new();
+    let entries = fs::read_dir(rustcask_dir)?;
+    for entry in entries {
+        let entry = entry?.path();
+        if is_data_file(&entry) {
+            let gen: GenerationNumber = parse_generation_number(entry);
+            generations.push(gen);
+        }
+    }
 
-    generations
+    Ok(generations)
 }
 
 fn create_data_file_readers(
     rustcask_dir: &Path,
-) -> HashMap<GenerationNumber, BufReaderWithPos<File>> {
+) -> Result<HashMap<GenerationNumber, BufReaderWithPos<File>>, io::Error> {
     let mut map = HashMap::new();
-    let generations = list_generations(&rustcask_dir);
+    let generations = list_generations(&rustcask_dir)?;
     for generation in generations {
         let reader = BufReaderWithPos::new(
             File::open(data_file_path(rustcask_dir, &generation)).expect(&format!(
-                "Unable to open data file for generation {}",
+                "Unable to open data file for generation {}.",
                 generation
             )),
-        )
-        .unwrap();
+        )?;
         map.insert(generation, reader);
     }
-    map
+    Ok(map)
 }
 
 fn is_data_file(path: &PathBuf) -> bool {
@@ -339,7 +369,11 @@ fn populate_keydir_with_data_file(
     keydir: &mut KeyDir,
     data_file_gen: GenerationNumber,
 ) {
-    let log_iter = LogFileIterator::new(data_file).unwrap();
+    let log_iter = LogFileIterator::new(data_file).expect(&format!(
+        "Unable to create a log file iterator for generation {}.
+        This iterator is used to populate the keydir on data store open.",
+        data_file_gen
+    ));
     for (entry, index) in log_iter {
         if entry.value.is_none() {
             keydir.remove(&entry.key);
@@ -398,7 +432,6 @@ mod tests {
         let expected_gen_values: Vec<u64> = expected_range.collect();
         assert_eq!(generations, expected_gen_values);
     }
-
 
     #[test]
     fn test_parse_generation_number() {
@@ -468,8 +501,10 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let temp_dir_path = temp_dir.path();
         // Force log file rotation by setting the max data file size to one byte
-        let mut store = RustCask::builder().set_max_data_file_size(1).open(temp_dir_path).unwrap();
-
+        let mut store = RustCask::builder()
+            .set_max_data_file_size(1)
+            .open(temp_dir_path)
+            .unwrap();
 
         let keys = ["key1".as_bytes().to_vec(), "key2".as_bytes().to_vec()];
         let values = ["value1".as_bytes().to_vec(), "value2".as_bytes().to_vec()];
@@ -477,7 +512,6 @@ mod tests {
         assert_eq!(store.active_generation, 0);
         assert_eq!(store.data_file_readers.len(), 1);
         assert_eq!(store.active_data_file_size, 0);
-        
 
         store.set(keys[0].clone(), values[0].clone()).unwrap();
 
@@ -487,10 +521,20 @@ mod tests {
         assert_eq!(store.get(&keys[0].clone()), Some(values[0].clone()));
 
         let data_files = fs::read_dir(temp_dir_path).unwrap();
-        let data_files: Vec<String> = data_files.map(|dir_entry| dir_entry.unwrap().path().file_name().unwrap().to_str().unwrap().to_string()).collect();
+        let data_files: Vec<String> = data_files
+            .map(|dir_entry| {
+                dir_entry
+                    .unwrap()
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
 
         let expected_data_files = vec!["0.rustcask.data", "1.rustcask.data"];
         assert_eq!(data_files, expected_data_files);
     }
-
 }
