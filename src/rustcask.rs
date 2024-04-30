@@ -9,7 +9,8 @@ use regex::Regex;
 
 use std::fs::OpenOptions;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::io;
+use std::sync::{self, Arc, Mutex, PoisonError, RwLock};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -53,7 +54,7 @@ impl RustCask {
 
     /// Inserts a key-value pair into the map.
     /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
-    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RustcaskError> {
+    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), SetError> {
         // To maintain correctness with concurrent reads, 'set' must insert an entry into the active data file,
         // and then update the keydir. This way, a concurrent read does not see an entry in the keydir
         // before the corresponding value has been written to the data file.
@@ -83,7 +84,7 @@ impl RustCask {
 
         self.keydir
             .write()
-            .expect("Keydir write lock was poisoned")
+            .expect("Another thread crashed while holding keydir lock. Panicking.")
             .set(
                 key,
                 self.active_generation,

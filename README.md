@@ -178,3 +178,23 @@ Databases use group commit, and bundle writes to disk together.
 
 See how rocksdb handles it: https://github.com/facebook/rocksdb/wiki/WAL-Performance.
 TODO: I should see how bitcask handles it, but I think I'll avoid syncing, and mention the durability thing in the README.
+
+Next up:
+- error handling and logs
+- hint files
+- clean up readme
+Done.
+
+
+### Error handling
+https://sabrinajewson.org/blog/errors
+"Units of fallibility"....
+Talk about how this inspired me to set up my error types the way I did, and include them as close to
+the code that threw them as I could.
+
+### Documentation
+Create some documentation at the end of this
+
+### Re-structuring
+I have a lot of logic in my rustcask.rs file. Is there a way to split this up?
+I should get rid of the rustcask.rs file.
