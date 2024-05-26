@@ -5,7 +5,7 @@ use rand::{
     distributions::{Distribution, Uniform},
     Rng,
 };
-use rustcask::rustcask::RustCask;
+use rustcask::RustCask;
 use tempfile::TempDir;
 
 fn main() {
@@ -122,7 +122,7 @@ fn bench_random_reads(bencher: Bencher) {
         .input_counter(|(rand_kv_pair, _)| {
             BytesCount::new(rand_kv_pair.0.len() + rand_kv_pair.1.len())
         })
-        .bench_values(|(kv_pair, mut store)| store.get(&kv_pair.0));
+        .bench_values(|(kv_pair, mut store)| store.get(&kv_pair.0).unwrap());
 }
 
 #[divan::bench()]

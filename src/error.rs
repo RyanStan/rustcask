@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    io, path::Path,
+    io,
 };
 
 #[derive(Debug)]
@@ -14,16 +14,14 @@ pub struct SetError {
 #[derive(Debug)]
 pub enum SetErrorKind {
     Serialize(bincode::Error),
-    DiskWrite(io::Error),
-    SeekError(io::Error),
+    Io(io::Error),
 }
 
 impl Error for SetError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
-            SetErrorKind::DiskWrite(e) => Some(e),
+            SetErrorKind::Io(e) => Some(e),
             SetErrorKind::Serialize(e) => Some(e),
-            SetErrorKind::SeekError(e) => Some(e),
         }
     }
 }
@@ -44,29 +42,32 @@ impl Display for SetError {
 #[non_exhaustive]
 pub struct RemoveError {
     pub kind: RemoveErrorKind,
-    // The key that we failed to remove
     pub key: Vec<u8>,
 }
 
 #[derive(Debug)]
 pub enum RemoveErrorKind {
-    DiskWrite(io::Error),
+    Io(io::Error),
+    /// A deserialization error indicates there was an error
+    /// retrieving the previous value at the key. This may mean that the
+    /// existing data was corrupted.
+    Deserialize(bincode::Error),
 }
 
 impl Error for RemoveError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
-            RemoveErrorKind::DiskWrite(e) => Some(e),
+            RemoveErrorKind::Io(e) => Some(e),
+            RemoveErrorKind::Deserialize(e) => Some(e),
         }
     }
 }
 
 impl Display for RemoveError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // TODO: Print the key that we failed to remove
         write!(
             f,
-            "error removing key. Bytes of key interpreted as utf: {} ",
+            "error removing key. Bytes of key interpreted as utf8: {}",
             String::from_utf8_lossy(&self.key)
         )
     }
@@ -81,27 +82,53 @@ pub struct OpenError {
 
 #[derive(Debug)]
 pub enum OpenErrorKind {
-    ListFiles(io::Error),
-    CreateActiveWriter(io::Error),
-    CreateDataFileReaders(io::Error),
+    Io(io::Error),
+    BadDirectory,
 }
 
 impl Error for OpenError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
-            OpenErrorKind::ListFiles(e) => Some(e),
-            OpenErrorKind::CreateActiveWriter(e) => Some(e),
-            OpenErrorKind::CreateDataFileReaders(e) => Some(e),
+            OpenErrorKind::Io(e) => Some(e),
+            OpenErrorKind::BadDirectory => None,
         }
     }
 }
 
 impl Display for OpenError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "error opening rustcask directory {}", self.rustcask_dir)
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct GetError<'a> {
+    pub kind: GetErrorKind,
+    pub key: &'a Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum GetErrorKind {
+    Io(io::Error),
+    Deserialize(bincode::Error),
+}
+
+impl<'a> Error for GetError<'a> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.kind {
+            GetErrorKind::Io(e) => Some(e),
+            GetErrorKind::Deserialize(e) => Some(e),
+        }
+    }
+}
+
+impl<'a> Display for GetError<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "error opening rustcask directory {}",
-            self.rustcask_dir
+            "error getting value.  Bytes of key interpreted as utf8: {}",
+            String::from_utf8_lossy(&self.key)
         )
     }
 }

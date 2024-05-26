@@ -192,6 +192,10 @@ https://sabrinajewson.org/blog/errors
 Talk about how this inspired me to set up my error types the way I did, and include them as close to
 the code that threw them as I could.
 
+However, mention how the error kinds are similar enough that maybe I should have implemented as
+a single error type. More flexibility to handle error types that are specific to each in the future,
+but more burden on user applications. If I had to redo it, I would probabaly do a single error type
+
 ### Documentation
 Create some documentation at the end of this
 

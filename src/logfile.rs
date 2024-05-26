@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bufio::BufReaderWithPos;
 
+// TODO: on errors, just clone the key in memory. I think it's fine.
+// If I get fancy, I can probably avoid doing that, but I don't want to get too fancy.
+
 /// Represents an entry in the data or hint files.
 #[derive(Serialize, Clone, Deserialize, Debug, PartialEq)]
 pub struct LogFileEntry {

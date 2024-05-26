@@ -1,4 +1,4 @@
-use crate::rustcask::GenerationNumber;
+use crate::GenerationNumber;
 use std::path::{Path, PathBuf};
 
 pub fn data_file_path(rustcask_dir: &Path, generation: &GenerationNumber) -> PathBuf {

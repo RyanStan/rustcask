@@ -1,13 +1,10 @@
-use assert_cmd::prelude::*;
-use rustcask::rustcask::RustCask;
+use rustcask::RustCask;
 
 use std::fs::{self};
 
 use std::path::Path;
 
 use tempfile::TempDir;
-
-// TODO: I can probabaly move all these tests to the rustcask file
 
 #[test]
 fn get_stored_value() {
@@ -20,16 +17,16 @@ fn get_stored_value() {
     store.set(keys[0].clone(), values[0].clone()).unwrap();
     store.set(keys[1].clone(), values[1].clone()).unwrap();
 
-    assert_eq!(store.get(&keys[0]), Some(values[0].clone()));
+    assert_eq!(store.get(&keys[0]).unwrap(), Some(values[0].clone()));
 
-    assert_eq!(store.get(&keys[1]), Some(values[1].clone()));
+    assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 
     drop(store);
 
     // Open from disk and check persistent data
     let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
-    assert_eq!(store.get(&keys[0]), Some(values[0].clone()));
-    assert_eq!(store.get(&keys[1]), Some(values[1].clone()));
+    assert_eq!(store.get(&keys[0]).unwrap(), Some(values[0].clone()));
+    assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 }
 
 #[test]
@@ -41,14 +38,14 @@ fn overwrite_value() {
     let values = ["value0".as_bytes().to_vec(), "value1".as_bytes().to_vec()];
 
     store.set(key.clone(), values[0].clone()).unwrap();
-    assert_eq!(store.get(&key.clone()), Some(values[0].clone()));
+    assert_eq!(store.get(&key.clone()).unwrap(), Some(values[0].clone()));
 
     store.set(key.clone(), values[1].clone()).unwrap();
-    assert_eq!(store.get(&key.clone()), Some(values[1].clone()));
+    assert_eq!(store.get(&key.clone()).unwrap(), Some(values[1].clone()));
 
     drop(store);
     let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
-    assert_eq!(store.get(&key.clone()), Some(values[1].clone()));
+    assert_eq!(store.get(&key.clone()).unwrap(), Some(values[1].clone()));
 }
 
 #[test]
@@ -57,7 +54,7 @@ fn get_non_existent_value() {
     let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
 
     let key = "key".as_bytes().to_vec();
-    assert_eq!(store.get(&key.clone()), None);
+    assert_eq!(store.get(&key.clone()).unwrap(), None);
 }
 
 #[test]
@@ -72,13 +69,13 @@ fn remove_key() {
     store.set(keys[1].clone(), values[1].clone()).unwrap();
 
     store.remove(keys[0].clone()).unwrap();
-    assert_eq!(store.get(&keys[0].clone()), None);
-    assert_eq!(store.get(&keys[1]), Some(values[1].clone()));
+    assert_eq!(store.get(&keys[0].clone()).unwrap(), None);
+    assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 
     drop(store);
     let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
-    assert_eq!(store.get(&keys[0].clone()), None);
-    assert_eq!(store.get(&keys[1]), Some(values[1].clone()));
+    assert_eq!(store.get(&keys[0].clone()).unwrap(), None);
+    assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 }
 
 /*
