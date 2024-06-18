@@ -25,22 +25,16 @@ A `RustCask` instance is thread safe and can be used by multiple threads concurr
 Reads can execute concurrently because each thread gets its own set of `data_file_readers`. 
 However, writes are serialized - all threads share the same `active_data_file_writer`.
 
-
-
 ### Error handling
-I had a bit of back-and-forth with myself on how to handle error types.
+I was inspired by this article, [Modular Errors in Rust](https://sabrinajewson.org/blog/errors), to create 
+ [distinct error types for each API operation](./src/error.rs): `SetError`, `GetError`, `OpenError`, and `RemoveError`.
 
-I started by defining an error enum, `RustcaskError`, with variants that represented different error sources. Each Rustcask operation would return a `Result<_, RustcaskError>`.
-The problem with this is that it forces callers to handle error variants that may not be thrown from
-the method they're calling.
+Set, get, open, and remove, are the "units of fallability" of an application. 
+Each operation may fail for different reasons, and should a unique error message.
+Therefore, defining distinct error types for each operation makes the most sense.
 
-To improve on this, I ended up creating [distinct error types for each API operation](./src/error.rs): `SetError`, `GetError`, `OpenError`, and `RemoveError`.
-
-I was inspired by this article, [Modular Errors in Rust](https://sabrinajewson.org/blog/errors).
-The author talks about how error types should be tied to the "units of fallability" of an application.
-In Rustcask's case, these units of fallability are the set, get, open, and remove operations.
-Each of these may fail for different reasons, and I want to return a different message to the caller in each case.
-The distinct error types lets us model this more nicely then a common error type.
+This is as opposed to the alternate pattern of having a library-wide error type like `RustCaskError`. Library wide error types are nice
+because they simplify code. However, they force the client to handle errors that may not be specific to the method they're calling.
 
 ### Other design decisions
 - Keep an open file handle for each data file in a Rustcask directory. This helps avoid expensive system calls to open files.
@@ -62,6 +56,10 @@ let store = RustCask::builder()
         .open(temp_dir.path())
         .unwrap();
 ```
+
+### Logging
+Rustcask links to the [log crate](https://crates.io/crates/log), and uses the provided macros to log useful information. 
+For these log messages to be emitted somewhere, consumers should provide their own logger implementation.
 
 ## Performance tests
 You can find performance tests under the [benches](./benches/) directory. 
@@ -85,7 +83,7 @@ Read workloads also perform well, as they require only a single disk seek, and t
 
 ## Todos
 - [] Implement hint files to speed up start time
-- [] Logging
+- [x] Logging
 - [] Performance metrics (e.g. count of "dead bytes" across data files)
 - [] Add documentation comments
 - [] Data file merging

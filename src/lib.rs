@@ -1,12 +1,16 @@
 //! This crate contains... TODO [RyanStan 04-07-24] Write crate description
-//! 
+//!
 
 use bufio::BufReaderWithPos;
-use error::{GetError, OpenError, OpenErrorKind, RemoveError, RemoveErrorKind, SetError, SetErrorKind};
+use error::{
+    GetError, OpenError, OpenErrorKind, RemoveError, RemoveErrorKind, SetError, SetErrorKind,
+};
 use keydir::KeyDir;
 use logfile::{LogFileEntry, LogFileIterator, LogIndex};
 use regex::Regex;
 use utils::data_file_path;
+
+use log::{debug, error, info, trace, warn};
 
 use std::fs::OpenOptions;
 
@@ -22,11 +26,10 @@ use std::{
 use crate::error::GetErrorKind;
 
 mod bufio;
-mod keydir;
-mod utils;
-mod logfile;
 pub mod error;
-
+mod keydir;
+mod logfile;
+mod utils;
 
 pub type GenerationNumber = u64;
 
@@ -67,6 +70,11 @@ impl RustCask {
         // To maintain correctness with concurrent reads, 'set' must insert an entry into the active data file,
         // and then update the keydir. This way, a concurrent read does not see an entry in the keydir
         // before the corresponding value has been written to the data file.
+
+        trace!(
+            "Set called with key (as UTF 8) {}",
+            String::from_utf8_lossy(&key)
+        );
 
         let data_file_entry = LogFileEntry {
             key: key,
@@ -122,6 +130,10 @@ impl RustCask {
             // TODO: extract below code into a "rotate active data file" function
             drop(writer);
             self.rotate_active_data_file();
+            debug!(
+                "Rotated active data file. New active generation: {}",
+                self.active_generation
+            );
         }
 
         Ok(())
@@ -155,6 +167,10 @@ impl RustCask {
     }
 
     pub fn get<'a>(&'a mut self, key: &'a Vec<u8>) -> Result<Option<Vec<u8>>, GetError<'a>> {
+        trace!(
+            "Get called with key (as UTF 8) {}",
+            String::from_utf8_lossy(key)
+        );
         let keydir = self
             .keydir
             .read()
@@ -202,6 +218,10 @@ impl RustCask {
     /// Removes a key from the store, returning the value at the key
     /// if the key was previously in the map.
     pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RemoveError> {
+        trace!(
+            "Remove called with key (as UTF 8) {}",
+            String::from_utf8_lossy(&key)
+        );
         let tombstone = LogFileEntry::create_tombstone_entry(key);
         let encoded_tombstone =
             bincode::serialize(&tombstone).expect("Could not serialize tombstone");
@@ -297,6 +317,10 @@ impl RustCaskBuilder {
     }
 
     pub fn open(self, rustcask_dir: &Path) -> Result<RustCask, OpenError> {
+        trace!(
+            "Open called on directory {}",
+            rustcask_dir.to_string_lossy().to_string()
+        );
         let rustcask_dir = PathBuf::from(&rustcask_dir);
 
         if !rustcask_dir.is_dir() {
@@ -337,6 +361,15 @@ impl RustCaskBuilder {
             })?;
 
         let keydir = Arc::new(RwLock::new(build_keydir(&generations, &rustcask_dir)));
+
+        info!(
+            "Opened Rustcask directory {}. Max data file size: {}. Number of existing data files: {}. Active generation: {}. Sync mode: {}.",
+            rustcask_dir.to_string_lossy().to_string(),
+            self.max_data_file_size,
+            data_file_readers.len(),
+            active_generation,
+            self.sync_mode
+        );
 
         Ok(RustCask {
             active_generation,
@@ -586,4 +619,3 @@ mod tests {
         assert_eq!(data_files, expected_data_files);
     }
 }
-

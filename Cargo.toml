@@ -18,8 +18,8 @@ clap = { version = "4.5.1", features = ["derive"] }
 regex = "1.10.3"
 serde = {version = "1.0.197", features= ["derive"] }
 bytes = "1.5.0"
-tracing = "0.1.40"
 rand = "0.8.5"
+log = "0.4.21"
 
 [[bench]]
 name = "readwrite"
