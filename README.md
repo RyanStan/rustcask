@@ -43,6 +43,19 @@ Eventually, we'll store the open file handles in a LRU cache, that way there's n
   This was the simplest approach to code up, and I don't have a reason to believe that memory-mapped I/O would be more efficient.
   It might be worth testing in the future - but my guess is that the results would be dependent on the workload.
 
+## Rustcask vs. Log-Structured Merge-Trees (LSM-trees) like LevelDB
+### What are the benefits of Rustcask over LSM-tree-based storage engines?
+- Rustcask design is much simpler than LSM-tree storage engines like LevelDB. As such, it's an easy code base to maintain.
+- Rustcask has less read amplification than LevelDB. For example, as described in the [WiscKey paper](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), LevelDB has high read amplification because you may have to read up to 14
+SSTable files to find the data you're looking for. In Rustcask, since we store the entire keydir in memory, 
+reads require only a single seek.
+
+### What are the benefits of LSM-trees like LevelDB over Rustcask
+- Rustcask stores the entire key-set in memory. If your key-set won't fit in memory, then LevelDB is a much better alternative
+because it stores a sparse index of the key-set in memory.
+- LevelDB supports efficient range queries because it writes values to disk in sorted order. 
+- LevelDB is likely much more efficient in how it manages the background compaction process.
+
 ## Usage
 For examples of usage, see [the integration tests](./tests/tests.rs), or the [performance tests](./benches/readwrite.rs).
 
