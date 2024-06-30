@@ -1,10 +1,14 @@
+use rustcask::error::GetError;
 use rustcask::RustCask;
 
 use std::fs::{self};
 
 use std::path::Path;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use tempfile::TempDir;
+
 
 #[test]
 fn get_stored_value() {
@@ -88,6 +92,55 @@ fn remove_non_existent_key() {
 }
 
 */
+
+#[test]
+fn concurrent_reads() {
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    let num_keyvals = 64;
+
+    for _ in 0..num_keyvals {
+        let key: Vec<u8> = (0..16).map(|_| rand::random::<u8>()).collect(); // 16-byte key
+        keys.push(key);
+    }
+
+    for _ in 0..num_keyvals {
+        let value: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect(); // 32-byte value
+        values.push(value);
+    }
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+
+    // Fill store
+    for i in 0..num_keyvals {
+        store.set(keys[i].clone(), values[i].clone()).unwrap();
+    }
+
+    // Run concurrent read tasks
+    let num_tasks = 64;
+    let mut handles = Vec::with_capacity(num_tasks);
+    let barrier = Arc::new(Barrier::new(num_tasks + 1));
+
+    for i in 0..num_tasks {
+        let barrier = Arc::clone(&barrier);
+        let key = keys[i].clone();
+        let expected_val = values[i].clone();
+        let mut store = store.clone();
+        handles.push(thread::spawn(move || {
+            // Read the data for ith key and we later confirm it was the correct
+            barrier.wait();
+            let val = store.get(&key).unwrap();
+            assert_eq!(val, Some(expected_val));
+        }));
+    }
+
+    barrier.wait();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
 
 fn print_files_in_dir<P>(dir: P)
 where

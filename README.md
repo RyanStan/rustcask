@@ -111,4 +111,4 @@ Read workloads also perform well, as they require only a single disk seek, and t
 - [] Performance metrics (e.g. count of "dead bytes" across data files)
 - [] Add documentation comments
 - [] Data file merging
-- [] Change readers to work correctly... can't just clone the file. need to create new files.
+- [] Change readers to work correctly... can't just clone the file. need to create new files. --> need to create integ test. Can I find a way to write async concurrent code with / without tokio?
