@@ -59,6 +59,17 @@ because it stores a sparse index of the key-set in memory.
 ## Usage
 For examples of usage, see [the integration tests](./tests/tests.rs), or the [performance tests](./benches/readwrite.rs).
 
+Here is a simple set-get example:
+```
+let mut store = RustCask::builder().open(rustcask_dir).unwrap();
+
+let key = "leader-node".as_bytes().to_vec();
+let value = "instance-a".as_bytes().to_vec();
+
+store.set(key.clone(), value).unwrap();
+store.get(&key)
+```
+
 ### Synchronous mode
 By default, writes to Rustcask are not immediately flushed to disk. This improves performance
 because the operating system can batch writes to disk. However, you can force 
@@ -100,3 +111,4 @@ Read workloads also perform well, as they require only a single disk seek, and t
 - [] Performance metrics (e.g. count of "dead bytes" across data files)
 - [] Add documentation comments
 - [] Data file merging
+- [] Change readers to work correctly... can't just clone the file. need to create new files.
