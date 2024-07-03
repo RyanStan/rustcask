@@ -1,5 +1,21 @@
-//! This crate contains... TODO [RyanStan 04-07-24] Write crate description
-//!
+//! `Rustcask` is a fast and efficient key-value storage engine implemented in Rust.
+//! It's based on [Bitcask,
+//! "A Log-Structured Hash Table for Fast Key/Value Data"](https://riak.com/assets/bitcask-intro.pdf).
+//! 
+//! For more details on the design of Rustcask, see [the README on Github](https://github.com/RyanStan/rustcask).
+//! 
+//! # Example
+//! ```
+//! let mut store = RustCask::builder().open(rustcask_dir).unwrap();
+//! 
+//! let key = "leader-node".as_bytes().to_vec();
+//! let value = "instance-a".as_bytes().to_vec();
+//! 
+//! store.set(key.clone(), value).unwrap();
+//! store.get(&key)
+//! ```
+
+
 
 use error::{
     GetError, OpenError, OpenErrorKind, RemoveError, RemoveErrorKind, SetError, SetErrorKind,
@@ -24,18 +40,20 @@ use std::{
 use crate::error::GetErrorKind;
 
 mod bufio;
+/// Rustcask error types.
 pub mod error;
 mod keydir;
 mod logfile;
 mod readers;
 mod utils;
 
-pub type GenerationNumber = u64;
+type GenerationNumber = u64;
 
-pub const MAX_DATA_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+const MAX_DATA_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
+/// A handle to interact with a Rustcask storage engine.
 #[derive(Clone, Debug)]
-pub struct RustCask {
+pub struct Rustcask {
     pub(crate) active_generation: GenerationNumber,
     pub(crate) active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
 
@@ -55,13 +73,15 @@ pub struct RustCask {
     sync_mode: bool,
 }
 
-impl RustCask {
-    pub fn builder() -> RustCaskBuilder {
-        RustCaskBuilder::default()
+impl Rustcask {
+    /// Returns a Rustcask builder with default configuration values.
+    pub fn builder() -> RustcaskBuilder {
+        RustcaskBuilder::default()
     }
 
-    /// Inserts a key-value pair into the map.
-    /// TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
+    /// Inserts a key-value pair into Rustcask.
+    /// 
+    // TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), SetError> {
         // To maintain correctness with concurrent reads, 'set' must insert an entry into the active data file,
         // and then update the keydir. This way, a concurrent read does not see an entry in the keydir
@@ -151,6 +171,7 @@ impl RustCask {
         self.active_data_file_size = 0;
     }
 
+    /// Returns a reference to the value corresponding to the key.
     pub fn get<'a>(&'a mut self, key: &'a Vec<u8>) -> Result<Option<Vec<u8>>, GetError<'a>> {
         trace!(
             "Get called with key (as UTF 8) {}",
@@ -197,7 +218,7 @@ impl RustCask {
     }
 
     /// Removes a key from the store, returning the value at the key
-    /// if the key was previously in the map.
+    /// if the key was previously in the store.
     pub fn remove(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, RemoveError> {
         trace!(
             "Remove called with key (as UTF 8) {}",
@@ -263,7 +284,16 @@ impl RustCask {
     }
 }
 
-pub struct RustCaskBuilder {
+/// Simplifies configuration and creation of Rustcask instances.
+/// # Example
+/// ```
+/// let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+/// let store = Rustcask::builder()
+///     .set_sync_mode(true)
+///     .open(temp_dir.path())
+///     .unwrap();
+/// ```
+pub struct RustcaskBuilder {
     max_data_file_size: u64,
 
     /// When sync mode is true, writes to the data file
@@ -273,7 +303,7 @@ pub struct RustCaskBuilder {
     sync_mode: bool,
 }
 
-impl Default for RustCaskBuilder {
+impl Default for RustcaskBuilder {
     fn default() -> Self {
         Self {
             max_data_file_size: MAX_DATA_FILE_SIZE,
@@ -282,18 +312,26 @@ impl Default for RustCaskBuilder {
     }
 }
 
-impl RustCaskBuilder {
+impl RustcaskBuilder {
+    /// Sets the maximium data file size. When the active data file
+    /// surpasses this size, it will be marked read-only and a new active data file 
+    /// will be created.
     pub fn set_max_data_file_size(mut self, max_size: u64) -> Self {
         self.max_data_file_size = max_size;
         self
     }
 
+    /// When sync mode is set to true, writes to the data file
+    /// are fsync'ed before returning to the user.
+    /// This guarantees that data is durable and persisted to disk immediately,
+    /// at the expense of reduced performance
     pub fn set_sync_mode(mut self, sync_mode: bool) -> Self {
         self.sync_mode = sync_mode;
         self
     }
 
-    pub fn open(self, rustcask_dir: &Path) -> Result<RustCask, OpenError> {
+    /// Generates a Rustcask instance.
+    pub fn open(self, rustcask_dir: &Path) -> Result<Rustcask, OpenError> {
         trace!(
             "Open called on directory {}",
             rustcask_dir.to_string_lossy().to_string()
@@ -347,7 +385,7 @@ impl RustCaskBuilder {
             self.sync_mode
         );
 
-        Ok(RustCask {
+        Ok(Rustcask {
             active_generation,
             active_data_file_writer,
             readers: data_file_readers,
@@ -414,7 +452,7 @@ mod tests {
             File::create(dir.path().join(format!("{}.rustcask.hint", number))).unwrap();
         }
 
-        let rustcask = RustCask::builder().open(dir.path()).unwrap();
+        let rustcask = Rustcask::builder().open(dir.path()).unwrap();
 
         assert_eq!(rustcask.active_generation, 5);
     }
@@ -422,7 +460,7 @@ mod tests {
     #[test]
     fn test_open_on_empty_dir() {
         let dir = tempdir().unwrap();
-        let rustcask = RustCask::builder().open(dir.path()).unwrap();
+        let rustcask = Rustcask::builder().open(dir.path()).unwrap();
         assert_eq!(rustcask.active_generation, 0);
     }
 
@@ -430,7 +468,7 @@ mod tests {
     fn test_open_non_existent_dir() {
         let dir = tempdir().unwrap();
         let invalid_dir = dir.path().join("invalid-dir");
-        let rustcask = RustCask::builder().open(&invalid_dir);
+        let rustcask = Rustcask::builder().open(&invalid_dir);
         // TODO [RyanStan 03-26-24] Assert that it is an OpenError
         assert!(matches!(
             rustcask,
@@ -467,7 +505,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let temp_dir_path = temp_dir.path();
         // Force log file rotation by setting the max data file size to one byte
-        let mut store = RustCask::builder()
+        let mut store = Rustcask::builder()
             .set_max_data_file_size(1)
             .open(temp_dir_path)
             .unwrap();

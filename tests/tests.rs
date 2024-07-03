@@ -1,4 +1,4 @@
-use rustcask::RustCask;
+use rustcask::Rustcask;
 
 use std::fs::{self};
 
@@ -11,7 +11,7 @@ use tempfile::TempDir;
 #[test]
 fn get_stored_value() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     let keys = ["key1".as_bytes().to_vec(), "key2".as_bytes().to_vec()];
     let values = ["value1".as_bytes().to_vec(), "value2".as_bytes().to_vec()];
@@ -26,7 +26,7 @@ fn get_stored_value() {
     drop(store);
 
     // Open from disk and check persistent data
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
     assert_eq!(store.get(&keys[0]).unwrap(), Some(values[0].clone()));
     assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 }
@@ -34,7 +34,7 @@ fn get_stored_value() {
 #[test]
 fn overwrite_value() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     let key = "key".as_bytes().to_vec();
     let values = ["value0".as_bytes().to_vec(), "value1".as_bytes().to_vec()];
@@ -46,14 +46,14 @@ fn overwrite_value() {
     assert_eq!(store.get(&key.clone()).unwrap(), Some(values[1].clone()));
 
     drop(store);
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
     assert_eq!(store.get(&key.clone()).unwrap(), Some(values[1].clone()));
 }
 
 #[test]
 fn get_non_existent_value() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     let key = "key".as_bytes().to_vec();
     assert_eq!(store.get(&key.clone()).unwrap(), None);
@@ -62,7 +62,7 @@ fn get_non_existent_value() {
 #[test]
 fn remove_key() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     let keys = ["key1".as_bytes().to_vec(), "key2".as_bytes().to_vec()];
     let values = ["value1".as_bytes().to_vec(), "value2".as_bytes().to_vec()];
@@ -75,7 +75,7 @@ fn remove_key() {
     assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 
     drop(store);
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
     assert_eq!(store.get(&keys[0].clone()).unwrap(), None);
     assert_eq!(store.get(&keys[1]).unwrap(), Some(values[1].clone()));
 }
@@ -108,7 +108,7 @@ fn concurrent_reads() {
     }
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     // Fill store
     for i in 0..num_keyvals {

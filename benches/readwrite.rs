@@ -5,7 +5,7 @@ use rand::{
     distributions::{Distribution, Uniform},
     Rng,
 };
-use rustcask::RustCask;
+use rustcask::Rustcask;
 use tempfile::TempDir;
 
 fn main() {
@@ -71,7 +71,7 @@ impl KeyValuePair {
 #[divan::bench]
 fn bench_writes(bencher: Bencher) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let store = Rustcask::builder().open(temp_dir.path()).unwrap();
 
     bencher
         .with_inputs(move || {
@@ -86,7 +86,7 @@ fn bench_writes(bencher: Bencher) {
 #[divan::bench]
 fn bench_writes_sync_mode(bencher: Bencher) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let store = RustCask::builder()
+    let store = Rustcask::builder()
         .set_sync_mode(true)
         .open(temp_dir.path())
         .unwrap();
@@ -104,7 +104,7 @@ fn bench_writes_sync_mode(bencher: Bencher) {
 #[divan::bench]
 fn bench_random_reads(bencher: Bencher) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
     let mut rng: rand::prelude::ThreadRng = rand::thread_rng();
     let kv_pairs = KeyValuePair::random_many(&mut rng, COUNT_KV_PAIRS, KEY_SIZE, VAL_SIZE);
     for kv_pair in kv_pairs.clone() {
@@ -128,7 +128,7 @@ fn bench_random_reads(bencher: Bencher) {
 #[divan::bench()]
 fn bench_open_hint_files_disabled(bencher: Bencher) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = RustCask::builder().open(temp_dir.path()).unwrap();
+    let mut store = Rustcask::builder().open(temp_dir.path()).unwrap();
     let mut rng: rand::prelude::ThreadRng = rand::thread_rng();
     let kv_pairs = KeyValuePair::random_many(&mut rng, COUNT_KV_PAIRS, KEY_SIZE, VAL_SIZE);
     for kv_pair in kv_pairs.clone() {
@@ -148,6 +148,6 @@ fn bench_open_hint_files_disabled(bencher: Bencher) {
     drop(store);
 
     bencher.bench_local(|| {
-        RustCask::builder().open(temp_dir.path()).unwrap();
+        Rustcask::builder().open(temp_dir.path()).unwrap();
     });
 }

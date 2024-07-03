@@ -15,6 +15,7 @@ pub fn hint_file_path(rustcask_dir: &Path, generation: GenerationNumber) -> Path
     rustcask_dir.join(format!("{}.rustcask.hint", generation))
 }
 
+/// Returns the generations that are present within a directory.
 pub fn list_generations(rustcask_dir: &Path) -> Result<Vec<GenerationNumber>, io::Error> {
     let mut generations: Vec<GenerationNumber> = Vec::new();
     let entries = fs::read_dir(rustcask_dir)?;

@@ -109,6 +109,6 @@ Read workloads also perform well, as they require only a single disk seek, and t
 - [] Implement hint files to speed up start time
 - [x] Logging
 - [] Performance metrics (e.g. count of "dead bytes" across data files)
-- [] Add documentation comments
+- [x] Add documentation comments (https://doc.rust-lang.org/book/ch14-02-publishing-to-crates-io.html#making-useful-documentation-comments)
 - [] Data file merging
 - [x] Modify readers so that the concurrent read test passes.
