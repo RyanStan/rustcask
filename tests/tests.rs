@@ -1,4 +1,3 @@
-use rustcask::error::GetError;
 use rustcask::RustCask;
 
 use std::fs::{self};
@@ -8,7 +7,6 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use tempfile::TempDir;
-
 
 #[test]
 fn get_stored_value() {
@@ -128,7 +126,6 @@ fn concurrent_reads() {
         let expected_val = values[i].clone();
         let mut store = store.clone();
         handles.push(thread::spawn(move || {
-            // Read the data for ith key and we later confirm it was the correct
             barrier.wait();
             let val = store.get(&key).unwrap();
             assert_eq!(val, Some(expected_val));

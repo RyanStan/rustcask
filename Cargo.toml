@@ -20,6 +20,7 @@ serde = {version = "1.0.197", features= ["derive"] }
 bytes = "1.5.0"
 rand = "0.8.5"
 log = "0.4.21"
+tokio = "1.38.0"
 
 [[bench]]
 name = "readwrite"

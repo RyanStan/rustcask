@@ -1,24 +1,22 @@
 //! This crate contains... TODO [RyanStan 04-07-24] Write crate description
 //!
 
-use bufio::BufReaderWithPos;
 use error::{
     GetError, OpenError, OpenErrorKind, RemoveError, RemoveErrorKind, SetError, SetErrorKind,
 };
 use keydir::KeyDir;
 use logfile::{LogFileEntry, LogFileIterator, LogIndex};
-use regex::Regex;
-use utils::data_file_path;
+use readers::Readers;
+use utils::{data_file_path, list_generations};
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace};
 
 use std::fs::OpenOptions;
 
 use std::io;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{
-    collections::HashMap,
-    fs::{self, File},
+    fs::File,
     io::{BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
@@ -29,6 +27,7 @@ mod bufio;
 pub mod error;
 mod keydir;
 mod logfile;
+mod readers;
 mod utils;
 
 pub type GenerationNumber = u64;
@@ -40,14 +39,11 @@ pub struct RustCask {
     pub(crate) active_generation: GenerationNumber,
     pub(crate) active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
 
-    // TODO [RyanStan 2-28-24] Keeping a file handle for every open file may cause us to hit
-    // system open file handle limits. We should use a LRU cache instead.
-    //
-    // A buffered reader provides benefits when performing sequential reads of the
-    // data and hint files during startup
-    pub(crate) data_file_readers: HashMap<GenerationNumber, BufReaderWithPos<File>>,
+    // Data file readers
+    readers: Readers,
 
-    pub(crate) directory: PathBuf,
+    // I can wrap this in Rc since it's immutable, and Rc guarantees immutability unless I get mut.
+    pub(crate) directory: Arc<PathBuf>,
 
     pub(crate) keydir: Arc<RwLock<KeyDir>>,
 
@@ -77,7 +73,7 @@ impl RustCask {
         );
 
         let data_file_entry = LogFileEntry {
-            key: key,
+            key,
             value: Some(value),
         };
 
@@ -152,17 +148,6 @@ impl RustCask {
             .expect("Error opening active data file");
 
         self.active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
-
-        let reader = BufReaderWithPos::new(
-            File::open(data_file_path(&self.directory, &self.active_generation)).expect(&format!(
-                "Unable to open data file for generation {}",
-                &self.active_generation
-            )),
-        )
-        .unwrap();
-
-        self.data_file_readers
-            .insert(self.active_generation, reader);
         self.active_data_file_size = 0;
     }
 
@@ -182,12 +167,8 @@ impl RustCask {
         let keydir_entry = keydir_entry.unwrap();
 
         let reader = self
-            .data_file_readers
-            .get_mut(&keydir_entry.data_file_gen)
-            .expect(&format!(
-                "Could not find reader for generation {}",
-                &keydir_entry.data_file_gen
-            ));
+            .readers
+            .get_data_file_reader(keydir_entry.data_file_gen);
 
         // TODO [RyanStan 3-25-24] This code is duplicated in remove. Extract it into a separate function.
         let log_index = &keydir_entry.index;
@@ -195,13 +176,13 @@ impl RustCask {
             .seek(SeekFrom::Start(log_index.offset))
             .map_err(|err| GetError {
                 kind: GetErrorKind::Io(err),
-                key: key,
+                key,
             })?;
 
         let data_file_entry: LogFileEntry =
             bincode::deserialize_from(reader).map_err(|err| GetError {
                 kind: GetErrorKind::Deserialize(err),
-                key: key,
+                key,
             })?;
 
         assert_eq!(
@@ -256,12 +237,8 @@ impl RustCask {
             None => Ok(None),
             Some(keydir_entry) => {
                 let reader = self
-                    .data_file_readers
-                    .get_mut(&keydir_entry.data_file_gen)
-                    .expect(&format!(
-                        "Could not find reader for generation {}",
-                        &keydir_entry.data_file_gen
-                    ));
+                    .readers
+                    .get_data_file_reader(keydir_entry.data_file_gen);
 
                 let log_index = &keydir_entry.index;
                 reader
@@ -321,7 +298,7 @@ impl RustCaskBuilder {
             "Open called on directory {}",
             rustcask_dir.to_string_lossy().to_string()
         );
-        let rustcask_dir = PathBuf::from(&rustcask_dir);
+        let rustcask_dir = Arc::new(PathBuf::from(rustcask_dir));
 
         if !rustcask_dir.is_dir() {
             return Err(OpenError {
@@ -354,11 +331,10 @@ impl RustCaskBuilder {
 
         let active_data_file_writer = Arc::new(Mutex::new(BufWriter::new(active_data_file)));
 
-        let data_file_readers =
-            create_data_file_readers(&rustcask_dir).map_err(|err| OpenError {
-                kind: OpenErrorKind::Io(err),
-                rustcask_dir: rustcask_dir.to_string_lossy().to_string(),
-            })?;
+        let data_file_readers = Readers::new(rustcask_dir.clone()).map_err(|err| OpenError {
+            kind: OpenErrorKind::Io(err),
+            rustcask_dir: rustcask_dir.to_string_lossy().to_string(),
+        })?;
 
         let keydir = Arc::new(RwLock::new(build_keydir(&generations, &rustcask_dir)));
 
@@ -366,7 +342,7 @@ impl RustCaskBuilder {
             "Opened Rustcask directory {}. Max data file size: {}. Number of existing data files: {}. Active generation: {}. Sync mode: {}.",
             rustcask_dir.to_string_lossy().to_string(),
             self.max_data_file_size,
-            data_file_readers.len(),
+            data_file_readers.data_file_readers.len(),
             active_generation,
             self.sync_mode
         );
@@ -374,7 +350,7 @@ impl RustCaskBuilder {
         Ok(RustCask {
             active_generation,
             active_data_file_writer,
-            data_file_readers,
+            readers: data_file_readers,
             directory: rustcask_dir,
             keydir,
             max_data_file_size: self.max_data_file_size,
@@ -382,47 +358,6 @@ impl RustCaskBuilder {
             sync_mode: self.sync_mode,
         })
     }
-}
-
-fn list_generations(rustcask_dir: &Path) -> Result<Vec<GenerationNumber>, io::Error> {
-    let mut generations: Vec<GenerationNumber> = Vec::new();
-    let entries = fs::read_dir(rustcask_dir)?;
-    for entry in entries {
-        let entry = entry?.path();
-        if is_data_file(&entry) {
-            let gen: GenerationNumber = parse_generation_number(entry);
-            generations.push(gen);
-        }
-    }
-
-    Ok(generations)
-}
-
-fn create_data_file_readers(
-    rustcask_dir: &Path,
-) -> Result<HashMap<GenerationNumber, BufReaderWithPos<File>>, io::Error> {
-    let mut map = HashMap::new();
-    let generations = list_generations(&rustcask_dir)?;
-    for generation in generations {
-        let reader = BufReaderWithPos::new(
-            File::open(data_file_path(rustcask_dir, &generation)).expect(&format!(
-                "Unable to open data file for generation {}.",
-                generation
-            )),
-        )?;
-        map.insert(generation, reader);
-    }
-    Ok(map)
-}
-
-fn is_data_file(path: &PathBuf) -> bool {
-    let file_name = match path.file_name() {
-        Some(file) => file,
-        None => return false,
-    };
-
-    let re = Regex::new(r"^\d+\.rustcask\.data$").unwrap();
-    re.is_match(&file_name.to_string_lossy())
 }
 
 // TODO [RyanStan 3-25-24] Implement hint files.
@@ -441,11 +376,14 @@ fn populate_keydir_with_data_file(
     keydir: &mut KeyDir,
     data_file_gen: GenerationNumber,
 ) {
-    let log_iter = LogFileIterator::new(data_file).expect(&format!(
-        "Unable to create a log file iterator for generation {}.
-        This iterator is used to populate the keydir on data store open.",
-        data_file_gen
-    ));
+    let log_iter = LogFileIterator::new(data_file).unwrap_or_else(|_| {
+        panic!(
+            "Unable to create a log file iterator for generation {}. \
+            This iterator is used to populate the keydir on data store open.",
+            data_file_gen
+        )
+    });
+
     for (entry, index) in log_iter {
         if entry.value.is_none() {
             keydir.remove(&entry.key);
@@ -455,65 +393,17 @@ fn populate_keydir_with_data_file(
     }
 }
 
-/// Returns the generation of a hint or data file
-fn parse_generation_number(path: PathBuf) -> GenerationNumber {
-    let file_name = path.file_name().unwrap().to_string_lossy();
-    let generation = file_name.split('.').next().expect("Unexpected file format");
-    let generation: GenerationNumber = generation
-        .parse()
-        .expect("Failed to parse generation from file name");
-
-    generation
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, io::Write};
+    use std::{
+        fs::{self, File},
+        io::Write,
+    };
 
     use crate::logfile::LogFileEntry;
 
     use super::*;
     use tempfile::{tempdir, TempDir};
-
-    #[test]
-    fn test_is_data_file() {
-        let dir = tempdir().unwrap();
-        let data_file = dir.path().join("/tmp/384304/0.rustcask.data");
-        assert!(is_data_file(&data_file));
-
-        let hint_file = dir.path().join("/tmp/384304/0.rustcask.hint");
-        assert!(!is_data_file(&hint_file));
-
-        let random_file = dir.path().join("/tmp/3432432/some-lock-file.lock");
-        assert!(!is_data_file(&random_file));
-    }
-
-    #[test]
-    fn test_list_generations() {
-        let dir = tempdir().unwrap();
-
-        for number in 0..5 {
-            File::create(dir.path().join(format!("{}.rustcask.data", number))).unwrap();
-            File::create(dir.path().join(format!("{}.rustcask.hint", number))).unwrap();
-        }
-
-        let mut generations = list_generations(dir.path()).unwrap();
-        generations.sort_unstable();
-        let expected_range = 0..5;
-        let expected_gen_values: Vec<u64> = expected_range.collect();
-        assert_eq!(generations, expected_gen_values);
-    }
-
-    #[test]
-    fn test_parse_generation_number() {
-        let dir = tempdir().unwrap();
-        let data_file = dir.path().join("/tmp/384304/0.rustcask.data");
-        assert_eq!(parse_generation_number(data_file), 0);
-
-        let dir = tempdir().unwrap();
-        let data_file = dir.path().join("/tmp/384304/1000.rustcask.hint");
-        assert_eq!(parse_generation_number(data_file), 1000);
-    }
 
     #[test]
     fn test_open() {
@@ -527,7 +417,6 @@ mod tests {
         let rustcask = RustCask::builder().open(dir.path()).unwrap();
 
         assert_eq!(rustcask.active_generation, 5);
-        assert_eq!(rustcask.data_file_readers.len(), 5);
     }
 
     #[test]
@@ -535,7 +424,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let rustcask = RustCask::builder().open(dir.path()).unwrap();
         assert_eq!(rustcask.active_generation, 0);
-        assert_eq!(rustcask.data_file_readers.len(), 1);
     }
 
     #[test]
@@ -588,13 +476,11 @@ mod tests {
         let values = ["value1".as_bytes().to_vec(), "value2".as_bytes().to_vec()];
 
         assert_eq!(store.active_generation, 0);
-        assert_eq!(store.data_file_readers.len(), 1);
         assert_eq!(store.active_data_file_size, 0);
 
         store.set(keys[0].clone(), values[0].clone()).unwrap();
 
         assert_eq!(store.active_generation, 1);
-        assert_eq!(store.data_file_readers.len(), 2);
         assert_eq!(store.active_data_file_size, 0);
         assert_eq!(
             store.get(&keys[0].clone()).unwrap(),

@@ -128,7 +128,7 @@ impl<'a> Display for GetError<'a> {
         write!(
             f,
             "error getting value.  Bytes of key interpreted as utf8: {}",
-            String::from_utf8_lossy(&self.key)
+            String::from_utf8_lossy(self.key)
         )
     }
 }
