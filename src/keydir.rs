@@ -38,3 +38,21 @@ impl KeyDir {
         self.keydir.remove(key)
     }
 }
+
+impl<'a> IntoIterator for &'a KeyDir {
+    type Item = (&'a Vec<u8>, &'a KeyDirEntry);
+    type IntoIter = std::collections::hash_map::Iter<'a, Vec<u8>, KeyDirEntry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.keydir.iter()
+    }
+}
+
+impl IntoIterator for KeyDir {
+    type Item = (Vec<u8>, KeyDirEntry);
+    type IntoIter = std::collections::hash_map::IntoIter<Vec<u8>, KeyDirEntry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.keydir.into_iter()
+    }
+}

@@ -23,7 +23,7 @@ use error::{
 use keydir::KeyDir;
 use logfile::{LogFileEntry, LogFileIterator, LogIndex};
 use readers::Readers;
-use utils::{data_file_path, list_generations};
+use utils::{data_file_path, list_generations, KEYDIR_POISON_ERR};
 
 use log::{debug, info, trace};
 
@@ -81,7 +81,6 @@ impl Rustcask {
 
     /// Inserts a key-value pair into Rustcask.
     /// 
-    // TODO [RyanStan 3/6/23] Instead of panicking with except or unwrap, we should bubble errors up to the caller.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), SetError> {
         // To maintain correctness with concurrent reads, 'set' must insert an entry into the active data file,
         // and then update the keydir. This way, a concurrent read does not see an entry in the keydir
@@ -281,6 +280,39 @@ impl Rustcask {
                 )))
             }
         }
+    }
+
+    // TODO [RyanStan 7-8-24] Implement merge window support.
+    fn can_merge(&self) -> bool {
+        true
+    }
+
+    /// Compacts the rustcask directory be writing active key-value pairs
+    /// to a new set of data files, and removes old data files which may have contained
+    /// dead values.
+    /// Reads can be performed concurrently with merges. However, writes will be blocked
+    /// until merge is complete.
+    //
+    // TODO [RyanStan 07/08/24] Instead of relying on the user to call merge,
+    //   the open function should spawn a background thread that performs merging based on
+    //   a configured interval.
+    pub fn merge(&mut self) -> Result<(), ()> {
+        let next_gen = self.active_generation + 1;
+        let keydir_guard = self.keydir.write().expect(KEYDIR_POISON_ERR);
+        let keydir = & *keydir_guard;
+
+        if self.can_merge() {
+            /*
+             For each entry in the keydir, copy the value from the mentioned data file to a new active data file.
+             At end, remove old data files. Then update keydir. I can maintain temporary keydir during operations.
+
+             Keep track of total bytes added to data file. If it exceeds some size, then need to open new data file to continue.
+             */
+            for (key, val) in keydir {
+
+            }
+        }
+        Ok(())
     }
 }
 

@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const KEYDIR_POISON_ERR: &str = "Another thread crashed while holding keydir lock. Panicking.";
+
 pub fn data_file_path(rustcask_dir: &Path, generation: &GenerationNumber) -> PathBuf {
     rustcask_dir.join(format!("{}.rustcask.data", generation))
 }

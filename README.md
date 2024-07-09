@@ -103,6 +103,11 @@ readwrite                  fastest       │ slowest       │ median        │
 
 Read workloads also perform well, as they require only a single disk seek, and the operating system's caching layers eliminate many disk accesses anyways.
 
+## Data file merging
+Bitcask accepts dir. Blazingtly fast keystore just writes keydir to active data file. Locks on writer so concurrent reads are ok
+
+Bitcask automatically spawns a merge process in background when you open the rustcask dir. Uses a Tokio runtime to schedule the task. Super cool. 
+You can specify the merge configuration in the conf.
 
 
 ## Todos
@@ -110,5 +115,5 @@ Read workloads also perform well, as they require only a single disk seek, and t
 - [x] Logging
 - [] Performance metrics (e.g. count of "dead bytes" across data files)
 - [x] Add documentation comments (https://doc.rust-lang.org/book/ch14-02-publishing-to-crates-io.html#making-useful-documentation-comments)
-- [] Data file merging
+- [] Data file merging 
 - [x] Modify readers so that the concurrent read test passes.
