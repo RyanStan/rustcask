@@ -25,7 +25,9 @@ impl LogFileEntry {
 
 #[derive(Debug, PartialEq)]
 pub struct LogIndex {
+    // Offset of log entry in bytes
     pub offset: u64,
+    // Length of log entry in bytes
     pub len: u64,
 }
 

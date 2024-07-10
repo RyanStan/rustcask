@@ -29,7 +29,7 @@ use log::{debug, info, trace};
 
 use std::fs::OpenOptions;
 
-use std::io;
+use std::io::{self, Read};
 use std::sync::{Arc, Mutex, RwLock};
 use std::{
     fs::File,
@@ -297,21 +297,63 @@ impl Rustcask {
     //   the open function should spawn a background thread that performs merging based on
     //   a configured interval.
     pub fn merge(&mut self) -> Result<(), ()> {
+        if !self.can_merge() {
+            return Err(());
+        }
+        /*
+            For each entry in the keydir, copy the value from the mentioned data file to a new active data file.
+            At end, remove old data files. Then update keydir. I can maintain temporary keydir during operations.
+
+            Keep track of total bytes added to data file. If it exceeds some size, then need to open new data file to continue.
+        */
         let next_gen = self.active_generation + 1;
         let keydir_guard = self.keydir.write().expect(KEYDIR_POISON_ERR);
         let keydir = & *keydir_guard;
+        let mut new_keydir = KeyDir::new();
+        let mut merge_offset: u64 = 0;
+        let mut file_size: u64 = 0;
 
-        if self.can_merge() {
-            /*
-             For each entry in the keydir, copy the value from the mentioned data file to a new active data file.
-             At end, remove old data files. Then update keydir. I can maintain temporary keydir during operations.
+        // TODO don't unwrap. Need to return some sort of error type.
+        let mut merge_data_file = BufWriter::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(data_file_path(&self.directory, &next_gen))
+                .unwrap()
+        );
 
-             Keep track of total bytes added to data file. If it exceeds some size, then need to open new data file to continue.
-             */
-            for (key, val) in keydir {
 
-            }
+        for (key, val) in keydir {
+            // Get reader for the file. 
+            let reader = self.readers.get_data_file_reader(val.data_file_gen);
+            reader.seek(SeekFrom::Start(val.index.offset)).unwrap();
+            let mut buffer: Vec<u8> = vec!(0; val.index.len as usize);
+            let bytes_read = reader.read(&mut buffer).unwrap();
+            assert_eq!(
+                bytes_read, val.index.len as usize,
+                "Error performing merging: bytes read for live entry does not match expected byte count.
+                Aborting merge. However, new data file is still safe to read from."
+            );
+            merge_data_file.write_all(&buffer).unwrap();
+
+            new_keydir
+                .set(
+                    key.clone(),
+                    next_gen,
+                    LogIndex {
+                        offset: merge_offset,
+                        len: bytes_read as u64,
+                    },
+                );
+
+
+                // TODO: if size of file gets too big, move to new data file.
+                // However, I should write test for this first before optimizing that.
+            merge_offset += bytes_read;
+            file_size += bytes_read;
         }
+        
         Ok(())
     }
 }
