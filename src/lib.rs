@@ -27,7 +27,7 @@ use utils::{data_file_path, list_generations, KEYDIR_POISON_ERR};
 
 use log::{debug, info, trace};
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex, RwLock};
@@ -54,6 +54,10 @@ const MAX_DATA_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 /// A handle to interact with a Rustcask storage engine.
 #[derive(Clone, Debug)]
 pub struct Rustcask {
+    // TODO [RyanStan 07/14/24] Bug!): If one process increments active generation,
+    //  it will not be incremented on other processes.
+    //  This should be bundled with the reader instead.
+    //   I should write a test to expose this as an issue.
     pub(crate) active_generation: GenerationNumber,
     pub(crate) active_data_file_writer: Arc<Mutex<BufWriter<File>>>,
 
@@ -300,18 +304,22 @@ impl Rustcask {
         if !self.can_merge() {
             return Err(());
         }
-        /*
-            For each entry in the keydir, copy the value from the mentioned data file to a new active data file.
-            At end, remove old data files. Then update keydir. I can maintain temporary keydir during operations.
 
-            Keep track of total bytes added to data file. If it exceeds some size, then need to open new data file to continue.
-        */
+        // Lock the writer to prevent concurrent writes.
+        let mut writer_lock = self
+            .active_data_file_writer
+            .lock()
+            .expect("Another thread crashed while holding the keydir lock. Panicking.");
+
         let next_gen = self.active_generation + 1;
-        let keydir_guard = self.keydir.write().expect(KEYDIR_POISON_ERR);
+        let mut keydir_guard = self.keydir.write().expect(KEYDIR_POISON_ERR);
         let keydir = & *keydir_guard;
         let mut new_keydir = KeyDir::new();
         let mut merge_offset: u64 = 0;
         let mut file_size: u64 = 0;
+
+        let mut previous_generations: Vec<GenerationNumber> =
+            list_generations(&self.directory).unwrap();
 
         // TODO don't unwrap. Need to return some sort of error type.
         let mut merge_data_file = BufWriter::new(
@@ -322,7 +330,6 @@ impl Rustcask {
                 .open(data_file_path(&self.directory, &next_gen))
                 .unwrap()
         );
-
 
         for (key, val) in keydir {
             // Get reader for the file. 
@@ -347,13 +354,38 @@ impl Rustcask {
                     },
                 );
 
+            // TODO [RyanStan 07/14/24] Create more than one data file
+            //  if the merged data file exceeds the max data file size.
+            merge_offset += bytes_read as u64;
+            file_size += bytes_read as u64;
 
-                // TODO: if size of file gets too big, move to new data file.
-                // However, I should write test for this first before optimizing that.
-            merge_offset += bytes_read;
-            file_size += bytes_read;
+            // right here on 7/15. Finished up deleting the older files.
+            // Wrote a test case for that, as well as a test case for 
+            // this creating new data files. Once done, I can clean up the unwraps
+            // and error. Then I'm done. On to hint files, maybe.
         }
-        
+
+        merge_data_file.flush().unwrap();
+
+        // Update the active data file and the keydir
+        *writer_lock = merge_data_file;
+        self.active_generation = next_gen;
+        *keydir_guard = new_keydir;
+
+        let mut deleted_file_count = 0;
+        let mut new_file_count = 1;
+
+        for generation in previous_generations {
+            debug!(
+                "Merge: deleting {}.", 
+                data_file_path(&self.directory, &generation).to_string_lossy().to_string()
+            );
+            fs::remove_file(data_file_path(&self.directory, &generation)).unwrap();
+            deleted_file_count += 1;
+        }
+
+        info!("Merged data files. Deleted {} previous generations. Created {} new generations.", deleted_file_count, new_file_count);
+
         Ok(())
     }
 }
@@ -515,6 +547,7 @@ mod tests {
     use crate::logfile::LogFileEntry;
 
     use super::*;
+    use bufio::BufReaderWithPos;
     use tempfile::{tempdir, TempDir};
 
     #[test]
@@ -599,6 +632,13 @@ mod tests {
             Some(values[0].clone())
         );
 
+        let data_files = file_names(temp_dir_path);
+
+        let expected_data_files = vec!["0.rustcask.data", "1.rustcask.data"];
+        assert_eq!(data_files, expected_data_files);
+    }
+
+    fn file_names(temp_dir_path: &Path) -> Vec<String> {
         let data_files = fs::read_dir(temp_dir_path).unwrap();
         let data_files: Vec<String> = data_files
             .map(|dir_entry| {
@@ -612,8 +652,87 @@ mod tests {
                     .to_string()
             })
             .collect();
+        data_files
+    }
+    
+    #[test]
+    fn test_merge() {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let temp_dir_path = temp_dir.path();
+        let mut store = Rustcask::builder()
+            .open(temp_dir_path)
+            .unwrap();
 
-        let expected_data_files = vec!["0.rustcask.data", "1.rustcask.data"];
+        store.set("leader".as_bytes().to_vec(), "instance-a".as_bytes().to_vec()).unwrap();
+        store.set("leader".as_bytes().to_vec(), "instance-b".as_bytes().to_vec()).unwrap();
+
+        let expected_data_files = vec!["0.rustcask.data"];
+        let data_files = file_names(temp_dir_path);
         assert_eq!(data_files, expected_data_files);
+
+        let log_file_keys = get_keys(temp_dir_path, &data_files[0]);
+        assert_eq!(log_file_keys.len(), 2);
+        assert_eq!(log_file_keys,
+            vec!["leader".as_bytes().to_vec(), "leader".as_bytes().to_vec()]
+        );
+
+        store.merge().unwrap();
+
+        let expected_data_files = vec![
+            "1.rustcask.data"
+        ];
+        let data_files = file_names(temp_dir_path);
+        assert_eq!(data_files, expected_data_files);
+
+        let log_file_iter = LogFileIterator::new(
+            temp_dir_path.join("1.rustcask.data")
+        ).unwrap();
+        
+        let log_file_entries: Vec<(Vec<u8>, Vec<u8>)> = log_file_iter.map(|x| {
+            (x.0.key, x.0.value.unwrap())
+        }).collect();
+
+        assert_eq!(log_file_entries.len(), 1);
+        assert_eq!(log_file_entries[0].0, "leader".as_bytes().to_vec());
+        assert_eq!(log_file_entries[0].1, "instance-b".as_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_merge_with_rotate() {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let temp_dir_path = temp_dir.path();
+        let mut store = Rustcask::builder()
+            .set_max_data_file_size(1)
+            .open(temp_dir_path)
+            .unwrap();
+
+        store.set("leader".as_bytes().to_vec(), "instance-a".as_bytes().to_vec()).unwrap();
+        store.set("last-election-ts".as_bytes().to_vec(), "00:00".as_bytes().to_vec()).unwrap();
+        store.set("leader".as_bytes().to_vec(), "instance-b".as_bytes().to_vec()).unwrap();
+
+        let expected_generations: Vec<GenerationNumber> = vec![0, 1, 2, 3];
+        let mut generations: Vec<GenerationNumber> = list_generations(temp_dir_path).unwrap();
+        generations.sort_unstable();
+        assert_eq!(generations, expected_generations);
+
+        // TODO: this will fail
+        store.merge().unwrap();
+        let expected_generations: Vec<GenerationNumber> = vec![4, 5, 6];
+        let mut generations: Vec<GenerationNumber> = list_generations(temp_dir_path).unwrap();
+        generations.sort_unstable();
+        assert_eq!(generations, expected_generations);
+    }
+
+    // Return the keys within a log file
+    fn get_keys(temp_dir_path: &Path, log_file: &String) -> Vec<Vec<u8>> {
+        let log_file_iter = LogFileIterator::new(
+            temp_dir_path.join(log_file)
+        ).unwrap();
+        
+        let log_file_keys: Vec<Vec<u8>> = log_file_iter.map(|x| {
+            x.0.key
+        }).collect();
+
+        log_file_keys
     }
 }
