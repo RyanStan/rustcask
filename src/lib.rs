@@ -371,22 +371,22 @@ impl Rustcask {
         self.active_generation = merge_gen;
         *keydir_guard = new_keydir;
 
-        let mut deleted_file_count = 0;
-        let mut new_file_count = 1;
+        self.delete_generations(previous_generations);
 
+        // TODO [RyanStan 07/17/24] Output stats about the number of bytes saved.
+        info!("Merged data files.");
+
+        Ok(())
+    }
+
+    fn delete_generations(&self, previous_generations: Vec<u64>) {
         for generation in previous_generations {
             debug!(
                 "Merge: deleting {}.", 
                 data_file_path(&self.directory, &generation).to_string_lossy().to_string()
             );
             fs::remove_file(data_file_path(&self.directory, &generation)).unwrap();
-            deleted_file_count += 1;
         }
-
-        // TODO [RyanStan 07/17/24] Output stats about the number of bytes saved.
-        info!("Merged data files.");
-
-        Ok(())
     }
 
 
