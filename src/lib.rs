@@ -311,14 +311,14 @@ impl Rustcask {
             .lock()
             .expect("Another thread crashed while holding the keydir lock. Panicking.");
 
-        let next_gen = self.active_generation + 1;
+        let mut merge_gen: u64 = self.active_generation + 1;
         let mut keydir_guard = self.keydir.write().expect(KEYDIR_POISON_ERR);
         let keydir = & *keydir_guard;
         let mut new_keydir = KeyDir::new();
         let mut merge_offset: u64 = 0;
         let mut file_size: u64 = 0;
 
-        let mut previous_generations: Vec<GenerationNumber> =
+        let previous_generations: Vec<GenerationNumber> =
             list_generations(&self.directory).unwrap();
 
         // TODO don't unwrap. Need to return some sort of error type.
@@ -327,7 +327,7 @@ impl Rustcask {
                 .read(true)
                 .write(true)
                 .create(true)
-                .open(data_file_path(&self.directory, &next_gen))
+                .open(data_file_path(&self.directory, &merge_gen))
                 .unwrap()
         );
 
@@ -347,7 +347,7 @@ impl Rustcask {
             new_keydir
                 .set(
                     key.clone(),
-                    next_gen,
+                    merge_gen,
                     LogIndex {
                         offset: merge_offset,
                         len: bytes_read as u64,
@@ -359,17 +359,16 @@ impl Rustcask {
             merge_offset += bytes_read as u64;
             file_size += bytes_read as u64;
 
-            // right here on 7/15. Finished up deleting the older files.
-            // Wrote a test case for that, as well as a test case for 
-            // this creating new data files. Once done, I can clean up the unwraps
-            // and error. Then I'm done. On to hint files, maybe.
+            if file_size > self.max_data_file_size {
+                self.rotate_merge_data_file(&mut merge_gen, &mut merge_data_file, &mut file_size, &mut merge_offset);
+            }
         }
 
         merge_data_file.flush().unwrap();
 
         // Update the active data file and the keydir
         *writer_lock = merge_data_file;
-        self.active_generation = next_gen;
+        self.active_generation = merge_gen;
         *keydir_guard = new_keydir;
 
         let mut deleted_file_count = 0;
@@ -384,11 +383,27 @@ impl Rustcask {
             deleted_file_count += 1;
         }
 
-        info!("Merged data files. Deleted {} previous generations. Created {} new generations.", deleted_file_count, new_file_count);
+        // TODO [RyanStan 07/17/24] Output stats about the number of bytes saved.
+        info!("Merged data files.");
 
         Ok(())
     }
-}
+
+
+    fn rotate_merge_data_file(&self, merge_gen: &mut u64, merge_data_file: &mut BufWriter<File>, file_size: &mut u64, merge_offset: &mut u64) {
+            *merge_gen += 1;
+            *merge_data_file = BufWriter::new(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(data_file_path(&self.directory, &*merge_gen))
+                    .unwrap()
+            );
+            *file_size = 0;
+            *merge_offset = 0;
+        }
+    }
 
 /// Simplifies configuration and creation of Rustcask instances.
 /// # Example
@@ -710,19 +725,32 @@ mod tests {
         store.set("last-election-ts".as_bytes().to_vec(), "00:00".as_bytes().to_vec()).unwrap();
         store.set("leader".as_bytes().to_vec(), "instance-b".as_bytes().to_vec()).unwrap();
 
-        let expected_generations: Vec<GenerationNumber> = vec![0, 1, 2, 3];
-        let mut generations: Vec<GenerationNumber> = list_generations(temp_dir_path).unwrap();
-        generations.sort_unstable();
-        assert_eq!(generations, expected_generations);
-
-        // TODO: this will fail
+        check_generations(temp_dir_path, vec![0, 1, 2, 3]);
         store.merge().unwrap();
-        let expected_generations: Vec<GenerationNumber> = vec![4, 5, 6];
+        check_generations(temp_dir_path, vec![4, 5, 6]);
+
+        drop(store);
+        let mut store = Rustcask::builder()
+            .set_max_data_file_size(1)
+            .open(temp_dir_path)
+            .unwrap();
+        assert_eq!(
+            store.get(&"leader".as_bytes().to_vec()).unwrap(),
+            Some("instance-b".as_bytes().to_vec())
+        );
+        assert_eq!(
+            store.get(&"last-election-ts".as_bytes().to_vec()).unwrap(),
+            Some("00:00".as_bytes().to_vec())
+        );
+
+    }
+
+    fn check_generations(temp_dir_path: &Path, expected_generations: Vec<GenerationNumber>) {
         let mut generations: Vec<GenerationNumber> = list_generations(temp_dir_path).unwrap();
         generations.sort_unstable();
         assert_eq!(generations, expected_generations);
     }
-
+    
     // Return the keys within a log file
     fn get_keys(temp_dir_path: &Path, log_file: &String) -> Vec<Vec<u8>> {
         let log_file_iter = LogFileIterator::new(
@@ -734,5 +762,22 @@ mod tests {
         }).collect();
 
         log_file_keys
+    }
+
+    type KeyBytes = Vec<u8>;
+    type ValueBytes = Vec<u8>;
+
+    /// Return key value pairs from a log file
+    fn get_keys_values(temp_dir_path: &Path, log_file: &String) -> Vec<(KeyBytes, ValueBytes)> {
+        let log_file_iter = LogFileIterator::new(
+            temp_dir_path.join(log_file)
+        ).unwrap();
+        
+        let log_file_kvs: Vec<(KeyBytes, ValueBytes)> = log_file_iter.map(|x| {
+            // Throws an error if there is a tombstone value
+            (x.0.key, x.0.value.unwrap())
+        }).collect();
+
+        log_file_kvs
     }
 }
