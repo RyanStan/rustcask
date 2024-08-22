@@ -3,18 +3,30 @@ Rustcask is a fast and efficient key-value storage engine implemented in Rust.
 It's based on [Bitcask,
 "A Log-Structured Hash Table for Fast Key/Value Data"](https://riak.com/assets/bitcask-intro.pdf).
 
-I drew a lot of inspiration from the blog article, 
+I've had a lot of fun learning Rust, exploring different key-value store architectures, and creating this project, so I'm excited to share it. I encourage you to check it out, especially if you have experience with Rust. I would love to hear feedback you have! 
+
+While working on this project, I drew a lot of inspiration from the blog article, 
 ["Build a BLAZINGLY FAST key-value store with Rust"](https://www.tunglevo.com/note/build-a-blazingly-fast-key-value-store-with-rust/).
 
 ## Design
+### Bitcask
 Rustcask follows the design of Bitcask very closely. A Rustcask directory is composed of data files. At any time,
 there is only one active data file. Writes are appended to that data file, and once it reaches a certain size,
 the file is closed and marked read-only.
+
+![alt text](./img/rustcask_directory.png)
 
 An in-memory data structure (see [keydir.rs](./src/keydir.rs)) maps each key to the data file and offset of the 
 most recently written value for that key. This means that reads require only a single disk seek.
 
 On restarts, Rustcask traverses data files within the Rustcask directory to rebuild the keydir.
+
+![alt text](./img/rustcask-keydir.png)
+
+By writing values to disk sequentially, Bitcask and Rustcask are able to achieve high write throughput. 
+However, this append-only strategy means that stale (overwritten) values accumulate in the data files. This is why Bitcask and Rustcask
+provide a `merge` function, which compacts data files and removes stale keys. In production environments, managing background data file compaction
+without affecting the key-value store's performance is a tricky problem.
 
 ### Serialization Format
 Instead of the serialization format described in the Bitcask paper, I decided to use the [bincode](https://docs.rs/bincode/latest/bincode/) crate. 
