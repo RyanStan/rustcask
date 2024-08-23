@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rustcask.svg)](https://crates.io/crates/rustcask)
+[![Documentation](https://docs.rs/rustcask/badge.svg)](https://docs.rs/rustcask/)
+
+
 # Rustcask
 Rustcask is a fast and efficient key-value storage engine implemented in Rust.
 It's based on [Bitcask,
