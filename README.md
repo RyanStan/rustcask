@@ -79,7 +79,7 @@ For examples of usage, see [the integration tests](./tests/tests.rs), or the [pe
 You can also check the cargo documentation with `cargo doc --open`.
 
 Here is a simple set-get example:
-```
+```rust
 let mut store = RustCask::builder().open(rustcask_dir).unwrap();
 
 let key = "leader-node".as_bytes().to_vec();
@@ -93,7 +93,7 @@ store.get(&key)
 By default, writes to Rustcask are not immediately flushed to disk. This improves performance
 because the operating system can batch writes to disk. However, you can force 
 Rustcask to immediately flush all writes to disk by enabling sync mode:
-```
+```rust
 let store = RustCask::builder()
         .set_sync_mode(true)
         .open(temp_dir.path())
